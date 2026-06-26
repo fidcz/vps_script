@@ -1,7 +1,7 @@
 #!/bin/sh
 #=========================================================
-# Alpine Linux 专用: Trojan-Go 极简一键安装脚本 (完全体)
-# 适配 128M 内存 LXC 架构，支持自定义/UUID随机密码/导出链接
+# LXC 极简小鸡通用版: Trojan-Go 一键安装脚本
+# 自适应包管理器 (apt/apk) 与守护进程 (Systemd/OpenRC)
 #=========================================================
 
 # 确保以 root 权限运行
@@ -10,12 +10,22 @@ if [ "$(id -u)" != "0" ]; then
     exit 1
 fi
 
-echo "=== Alpine Trojan-Go 极简安装向导 ==="
+echo "=== LXC Trojan-Go 通用极简安装向导 ==="
 
-# 检查并安装必要系统依赖
+# [新增] 自动检测并使用对应的包管理器安装依赖
 echo "正在检查并安装必要系统依赖 (curl, unzip, openssl)..."
-apk update >/dev/null 2>&1
-apk add --no-cache curl unzip openssl >/dev/null 2>&1
+if command -v apk >/dev/null 2>&1; then
+    # Alpine 系统
+    apk update >/dev/null 2>&1
+    apk add --no-cache curl unzip openssl >/dev/null 2>&1
+elif command -v apt-get >/dev/null 2>&1; then
+    # Debian/Ubuntu 系统
+    apt-get update >/dev/null 2>&1
+    apt-get install -y curl unzip openssl >/dev/null 2>&1
+else
+    echo "❌ 错误: 未找到支持的包管理器 (apt/apk)，请手动安装 curl, unzip, openssl。"
+    exit 1
+fi
 
 echo "========================================================="
 
@@ -71,8 +81,37 @@ cat > /etc/trojan-go/config.json <<EOF
 }
 EOF
 
-echo "[4/6] 正在注册 OpenRC 开机自启服务..."
-cat > /etc/init.d/trojan-go <<'EOF'
+echo "[4/6] 正在检测系统初始化进程并注册服务..."
+# [新增] 核心逻辑：优先 Systemd，降级 OpenRC
+if command -v systemctl >/dev/null 2>&1; then
+    INIT_SYSTEM="systemd"
+    echo " -> 检测到 Systemd，正在写入 service 配置..."
+    cat > /etc/systemd/system/trojan-go.service <<-EOF
+[Unit]
+Description=Trojan-Go Proxy Service
+After=network.target network-online.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/trojan-go -config /etc/trojan-go/config.json
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable trojan-go >/dev/null 2>&1
+    
+    echo "[5/6] 正在启动 Trojan-Go 服务..."
+    systemctl restart trojan-go
+
+elif command -v rc-update >/dev/null 2>&1; then
+    INIT_SYSTEM="openrc"
+    echo " -> 检测到 OpenRC (Alpine)，正在写入 init.d 配置..."
+    cat > /etc/init.d/trojan-go <<'EOF'
 #!/sbin/openrc-run
 
 name="trojan-go"
@@ -89,26 +128,24 @@ depend() {
     after dns
 }
 EOF
-
-chmod +x /etc/init.d/trojan-go
-rc-update add trojan-go default >/dev/null 2>&1
-
-echo "[5/6] 正在启动 Trojan-Go 服务..."
-rc-service trojan-go restart >/dev/null 2>&1
+    chmod +x /etc/init.d/trojan-go
+    rc-update add trojan-go default >/dev/null 2>&1
+    
+    echo "[5/6] 正在启动 Trojan-Go 服务..."
+    rc-service trojan-go restart >/dev/null 2>&1
+else
+    echo "❌ 错误: 未检测到 Systemd 或 OpenRC，无法自动注册服务。请手动运行 Trojan-Go。"
+    exit 1
+fi
 
 echo "[6/6] 正在获取公网 IP 并生成分享链接..."
-# 尝试获取公网IP，如果获取失败则留空，让用户自己填
 PUBLIC_IP=$(curl -s --max-time 3 ifconfig.me)
 if [ -z "$PUBLIC_IP" ]; then
     PUBLIC_IP="你的公网IP或DDNS"
 fi
 
-# 生成随机名称后缀 (如: Alpine-Nat-1a2b)
 RANDOM_SUFFIX=$(openssl rand -hex 2)
-NODE_NAME="Alpine-Nat-${RANDOM_SUFFIX}"
-
-# 拼接标准 Trojan URI
-# 注意：标准的 Trojan-Go 伪装只需 sni=bing.com 即可。allowinsecure=1 对应跳过证书验证。
+NODE_NAME="LXC-Nat-${RANDOM_SUFFIX}"
 TROJAN_LINK="trojan://${PASSWORD}@${PUBLIC_IP}:${PORT}?sni=bing.com&allowinsecure=1#${NODE_NAME}"
 
 echo ""
@@ -120,11 +157,21 @@ echo ""
 echo -e "\033[32m${TROJAN_LINK}\033[0m"
 echo ""
 echo " ⚠️ 注意："
-echo " 如果 ${PUBLIC_IP} 不是你 NAT 机器的正确公网入口IP，"
-echo " 请在客户端中手动将其修改为你的 DDNS 域名或正确的入口IP。"
+echo " 如果 ${PUBLIC_IP} 不是你 NAT 机器的正确入口公网 IP，"
+echo " 请在客户端中手动将其修改为正确的 IP 或 DDNS 域名。"
 echo "========================================================="
 echo " 管理命令提示:"
-echo " 启动: rc-service trojan-go start"
-echo " 停止: rc-service trojan-go stop"
-echo " 状态: rc-service trojan-go status"
+
+# [新增] 动态显示管理命令
+if [ "$INIT_SYSTEM" = "systemd" ]; then
+    echo " 启动: systemctl start trojan-go"
+    echo " 停止: systemctl stop trojan-go"
+    echo " 状态: systemctl status trojan-go"
+    echo " 日志: journalctl -u trojan-go -f"
+elif [ "$INIT_SYSTEM" = "openrc" ]; then
+    echo " 启动: rc-service trojan-go start"
+    echo " 停止: rc-service trojan-go stop"
+    echo " 状态: rc-service trojan-go status"
+    echo " 日志: cat /var/log/trojan-go.err"
+fi
 echo "========================================================="
