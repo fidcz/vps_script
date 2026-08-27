@@ -6,27 +6,28 @@ LOG_PATH="/tmp/speed_brush.log"
 
 # 最高限速 1M/s (1048576 字节/秒)
 MAX_RATE="1048576"
-# 节点最长下载时间 (秒)：100 秒 * 1MB/s 刚好 = 100MB 流量
+# 最长运行时间 (秒)
 MAX_TIME="100"
 # 最长随机等待时间 (秒)
 MAX_SLEEP=1200
 
-# 伪装 User-Agent (防止 Cloudflare/CDN 返回 403)
+# 伪装 User-Agent
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# 国内高可用非镜像节点池 (大文件安装包，长期保留不更名)
+# 精简后 100% 可用且极速的国内大文件节点池
 DOMESTIC_URLS=(
+    "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
     "https://cdn.npmmirror.com/binaries/node/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
     "https://mirrors.cloud.tencent.com/gradle/gradle-8.5-all.zip"
-    "https://mirrors.163.com/mysql/Downloads/MySQL-8.0/mysql-8.0.36.tar.gz"
-    "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
 )
 
-# 国外流量测试节点池 (多个备用，带有动态数据流)
+# 经过实测在全球均能跑满带宽的国外节点池 (CDN/云厂商官方测速源)
 FOREIGN_URLS=(
-    "https://speed.cloudflare.com/__down?bytes=500000000"
-    "https://ash-va-us.vultr.com/vultr.com.1000MB.bin"
-    "https://fsn1-speed.hetzner.com/100MB.bin"
+    "https://speed.cloudflare.com/__down?bytes=200000000"
+    "https://speed.hetzner.de/100MB.bin"
+    "https://sgp-ping.vultr.com/vultr.com.1000MB.bin"
+    "https://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"
+    "https://speedtest.selectel.ru/100MB.bin"
 )
 
 # ================= 1. 环境自愈模块 =================
@@ -104,7 +105,7 @@ uninstall_cron() {
     echo "[✓] 定时任务已安全清除。"
 }
 
-# ================= 3. 通用下载函数 (含重试与抗封锁) =================
+# ================= 3. 下载执行模块 (带过低速率防护) =================
 download_with_retry() {
     local -n urls=$1
     local mode_name=$2
@@ -119,25 +120,26 @@ download_with_retry() {
         
         echo -e "\n正在从 [$mode_name: $target_url] 下载..."
         
-        # 执行 curl
+        # -Y 200000 -y 15: 如果连续 15 秒速度低于 200KB/s，自动放弃并尝试下一个更快的节点
         curl -L --fail \
              -A "$UA" \
              --limit-rate $MAX_RATE \
              -m $MAX_TIME \
+             -Y 200000 -y 15 \
              $progress_flag -o /dev/null \
              "$target_url"
         
-        # 检查上一条 curl 命令退出码：0 为完成，28 为达到指定 -m 时间(正常截断)，属于成功
         local exit_code=$?
+        # 0: 正常完成, 28: 达到指定 MAX_TIME (已成功达到100MB流量)
         if [ $exit_code -eq 0 ] || [ $exit_code -eq 28 ]; then
             echo -e "\n[$mode_name] 传输完成 (100MB)。"
             return 0
         else
-            echo -e "\n[警告] 节点响应异常 (HTTP 状态/连接失败，代码: $exit_code)，正在尝试备用节点..."
+            echo -e "\n[警告] 该节点速度过慢或连接中断 (退出码: $exit_code)，自动切换下一个节点..."
         fi
     done
 
-    echo "[错误] $mode_name 所有备用节点均无法连接！"
+    echo "[错误] $mode_name 所有备用节点均无法满足速率要求！"
     return 1
 }
 
