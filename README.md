@@ -13,8 +13,8 @@ curl -o trojan_install.sh https://raw.githubusercontent.com/fidcz/vps_script/ref
 ```
 
 ## speed_brush.sh
-> 自动刷流量
-首次安装
+> 自动刷流量  
+### 首次安装
 ```
 curl -fsSL https://raw.githubusercontent.com/.../speed_brush.sh -o /usr/local/bin/speed_brush.sh && chmod +x /usr/local/bin/speed_brush.sh && /usr/local/bin/speed_brush.sh install
 ```
