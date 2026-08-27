@@ -11,16 +11,23 @@ MAX_TIME="100"
 # 最长随机等待时间 (秒)
 MAX_SLEEP=1200
 
-# 经过验证的高可用流量测试节点池 (采用动态大小/大体积真实文件)
+# 伪装 User-Agent (防止 Cloudflare/CDN 返回 403)
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# 国内高可用非镜像节点池 (大文件安装包，长期保留不更名)
 DOMESTIC_URLS=(
-    "https://mirrors.aliyun.com/ubuntu-releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
-    "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
-    "https://mirrors.ustc.edu.cn/ubuntu-releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
-    "https://repo.huaweicloud.com/java/jdk/8u202-b08/jdk-8u202-linux-x64.tar.gz"
+    "https://cdn.npmmirror.com/binaries/node/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
+    "https://mirrors.cloud.tencent.com/gradle/gradle-8.5-all.zip"
+    "https://mirrors.163.com/mysql/Downloads/MySQL-8.0/mysql-8.0.36.tar.gz"
+    "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
 )
 
-# 国外流量测试节点 (Cloudflare 动态生成流，永不 404)
-FOREIGN_URL="https://speed.cloudflare.com/__down?bytes=500000000"
+# 国外流量测试节点池 (多个备用，带有动态数据流)
+FOREIGN_URLS=(
+    "https://speed.cloudflare.com/__down?bytes=500000000"
+    "https://ash-va-us.vultr.com/vultr.com.1000MB.bin"
+    "https://fsn1-speed.hetzner.com/100MB.bin"
+)
 
 # ================= 1. 环境自愈模块 =================
 ensure_dependencies() {
@@ -97,12 +104,48 @@ uninstall_cron() {
     echo "[✓] 定时任务已安全清除。"
 }
 
-# ================= 3. 核心任务 =================
+# ================= 3. 通用下载函数 (含重试与抗封锁) =================
+download_with_retry() {
+    local -n urls=$1
+    local mode_name=$2
+    local progress_flag=$3
+    
+    local count=${#urls[@]}
+    local start_index=$((RANDOM % count))
+    
+    for ((i=0; i<count; i++)); do
+        local idx=$(((start_index + i) % count))
+        local target_url="${urls[$idx]}"
+        
+        echo -e "\n正在从 [$mode_name: $target_url] 下载..."
+        
+        # 执行 curl
+        curl -L --fail \
+             -A "$UA" \
+             --limit-rate $MAX_RATE \
+             -m $MAX_TIME \
+             $progress_flag -o /dev/null \
+             "$target_url"
+        
+        # 检查上一条 curl 命令退出码：0 为完成，28 为达到指定 -m 时间(正常截断)，属于成功
+        local exit_code=$?
+        if [ $exit_code -eq 0 ] || [ $exit_code -eq 28 ]; then
+            echo -e "\n[$mode_name] 传输完成 (100MB)。"
+            return 0
+        else
+            echo -e "\n[警告] 节点响应异常 (HTTP 状态/连接失败，代码: $exit_code)，正在尝试备用节点..."
+        fi
+    done
+
+    echo "[错误] $mode_name 所有备用节点均无法连接！"
+    return 1
+}
+
+# ================= 4. 核心任务 =================
 run_task() {
     IS_CRON_MODE=$1
     ensure_dependencies
 
-    # 设置 curl 的进度条显示逻辑：后台 cron 模式隐蔽输出，手动模式显示实时速率
     CURL_SHOW_PROGRESS="--progress-bar"
     if [ "$IS_CRON_MODE" = "--cron" ] || [ "$IS_CRON_MODE" = "--delay" ]; then
         CURL_SHOW_PROGRESS="-s"
@@ -113,33 +156,18 @@ run_task() {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [手动模式] 跳过延迟，立即开始下载..."
     fi
 
-    # 随机选择国内节点
-    DOMESTIC_COUNT=${#DOMESTIC_URLS[@]}
-    RANDOM_INDEX=$((RANDOM % DOMESTIC_COUNT))
-    SELECTED_DOMESTIC_URL="${DOMESTIC_URLS[$RANDOM_INDEX]}"
-
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始任务 (内外网节点各跑 100 秒)..."
 
-    # 执行国内节点下载 (--fail 保证遇到404能识别, -L 跟踪重定向, -m 100 保持下载100秒)
-    echo "正在从 [国内节点: $SELECTED_DOMESTIC_URL] 下载..."
-    curl -L --fail \
-         --limit-rate $MAX_RATE \
-         -m $MAX_TIME \
-         $CURL_SHOW_PROGRESS -o /dev/null \
-         "$SELECTED_DOMESTIC_URL"
+    # 执行国内节点下载
+    download_with_retry DOMESTIC_URLS "国内节点" "$CURL_SHOW_PROGRESS"
 
     # 执行国外节点下载
-    echo -e "\n正在从 [国外节点] 下载..."
-    curl -L --fail \
-         --limit-rate $MAX_RATE \
-         -m $MAX_TIME \
-         $CURL_SHOW_PROGRESS -o /dev/null \
-         "$FOREIGN_URL"
+    download_with_retry FOREIGN_URLS "国外节点" "$CURL_SHOW_PROGRESS"
 
-    echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] 本次 200MB 任务已完成。"
+    echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] 本次任务全部结束。"
 }
 
-# ================= 4. 命令路由处理 =================
+# ================= 5. 命令路由处理 =================
 case "$1" in
     install)
         install_cron
