@@ -6,8 +6,8 @@ LOG_PATH="/tmp/speed_brush.log"
 
 # 最高限速 1M/s (1048576 字节/秒)
 MAX_RATE="1048576"
-# 单次最大下载量 100M (104857600 字节)
-MAX_BYTES="104857600"
+# 最长运行时间: 100 秒 (在 1MB/s 下刚好跑满 100MB 流量)
+MAX_TIME="100"
 # 最长随机等待时间 (秒)，20分钟内随机启动
 MAX_SLEEP=1200
 
@@ -27,13 +27,11 @@ FOREIGN_URL="https://speed.cloudflare.com/__down?bytes=104857600"
 
 # ================= 1. 环境自愈模块 =================
 ensure_dependencies() {
-    # 检查 curl
     if ! command -v curl >/dev/null 2>&1; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 未检测到 curl，开始自动安装..."
         install_pkg curl
     fi
 
-    # 检查 crontab
     if ! command -v crontab >/dev/null 2>&1; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] 未检测到 cron/crontab，开始自动安装..."
         if command -v apt-get >/dev/null 2>&1; then
@@ -73,7 +71,6 @@ install_pkg() {
 install_cron() {
     ensure_dependencies
 
-    # 如果当前脚本不在目标路径，则复制自身过去
     CURRENT_SCRIPT=$(readlink -f "$0")
     if [ "$CURRENT_SCRIPT" != "$SCRIPT_PATH" ]; then
         echo "正在复制脚本至系统路径 $SCRIPT_PATH ..."
@@ -83,13 +80,9 @@ install_cron() {
         $SUDO chmod +x "$SCRIPT_PATH"
     fi
 
-    # 定时任务执行 run 命令时传入 --cron 参数，触发随机延迟
     CRON_CMD="*/30 * * * * $SCRIPT_PATH run --cron >> $LOG_PATH 2>&1"
-    
-    # 获取现有 crontab 内容
     EXISTING_CRON=$(crontab -l 2>/dev/null)
 
-    # 检查是否已经添加过，更新或写入
     if echo "$EXISTING_CRON" | grep -Fq "$SCRIPT_PATH"; then
         echo "正在更新已有的 Crontab 定时任务配置..."
         (echo "$EXISTING_CRON" | grep -v "$SCRIPT_PATH"; echo "$CRON_CMD") | crontab -
@@ -99,9 +92,6 @@ install_cron() {
         (echo "$EXISTING_CRON"; echo "$CRON_CMD") | crontab -
         echo "[✓] 部署完成！Crontab 已就绪。"
     fi
-
-    echo "日志输出文件: $LOG_PATH"
-    echo "你可以通过命令手动测试运行 (立即下载): $SCRIPT_PATH run"
 }
 
 uninstall_cron() {
@@ -110,12 +100,11 @@ uninstall_cron() {
     echo "[✓] 定时任务已安全清除。"
 }
 
-# ================= 3. 核心流量任务 =================
+# ================= 3. 核心任务 =================
 run_task() {
     IS_CRON_MODE=$1
     ensure_dependencies
 
-    # 判断是否需要延迟：只有在 --cron 或 --delay 模式下才随机延迟
     if [ "$IS_CRON_MODE" = "--cron" ] || [ "$IS_CRON_MODE" = "--delay" ]; then
         RANDOM_DELAY=$((RANDOM % MAX_SLEEP))
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [定时模式] 随机等待 $RANDOM_DELAY 秒后开始下载..."
@@ -124,28 +113,27 @@ run_task() {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [手动模式] 跳过延迟，立即开始下载..."
     fi
 
-    # 挑选国内节点
     DOMESTIC_COUNT=${#DOMESTIC_URLS[@]}
     RANDOM_INDEX=$((RANDOM % DOMESTIC_COUNT))
     SELECTED_DOMESTIC_URL="${DOMESTIC_URLS[$RANDOM_INDEX]}"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始流量任务..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始任务 (预计运行 200 秒)..."
 
-    # 执行国内节点下载
+    # 执行国内节点下载 (-L 自动追踪重定向, -m 100 限制最长运行 100 秒)
     echo "正在从 [国内节点: $SELECTED_DOMESTIC_URL] 下载..."
-    curl --limit-rate $MAX_RATE \
-         --max-filesize $MAX_BYTES \
+    curl -L --limit-rate $MAX_RATE \
+         -m $MAX_TIME \
          -s -o /dev/null \
          "$SELECTED_DOMESTIC_URL"
 
     # 执行国外节点下载
     echo "正在从 [国外节点] 下载..."
-    curl --limit-rate $MAX_RATE \
-         --max-filesize $MAX_BYTES \
+    curl -L --limit-rate $MAX_RATE \
+         -m $MAX_TIME \
          -s -o /dev/null \
          "$FOREIGN_URL"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 本次流量任务已完成。"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 本次任务已完成。"
 }
 
 # ================= 4. 命令路由处理 =================
