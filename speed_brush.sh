@@ -83,14 +83,17 @@ install_cron() {
         $SUDO chmod +x "$SCRIPT_PATH"
     fi
 
-    CRON_CMD="*/30 * * * * $SCRIPT_PATH run >> $LOG_PATH 2>&1"
+    # 定时任务执行 run 命令时传入 --cron 参数，触发随机延迟
+    CRON_CMD="*/30 * * * * $SCRIPT_PATH run --cron >> $LOG_PATH 2>&1"
     
     # 获取现有 crontab 内容
     EXISTING_CRON=$(crontab -l 2>/dev/null)
 
-    # 检查是否已经添加过，避免重复注入
+    # 检查是否已经添加过，更新或写入
     if echo "$EXISTING_CRON" | grep -Fq "$SCRIPT_PATH"; then
-        echo "[✓] Crontab 定时任务已存在，无需重复添加！"
+        echo "正在更新已有的 Crontab 定时任务配置..."
+        (echo "$EXISTING_CRON" | grep -v "$SCRIPT_PATH"; echo "$CRON_CMD") | crontab -
+        echo "[✓] Crontab 定时任务更新成功！"
     else
         echo "正在写入 Crontab 定时任务 (每30分钟执行一次)..."
         (echo "$EXISTING_CRON"; echo "$CRON_CMD") | crontab -
@@ -98,7 +101,7 @@ install_cron() {
     fi
 
     echo "日志输出文件: $LOG_PATH"
-    echo "你可以通过命令手动测试运行: $SCRIPT_PATH run"
+    echo "你可以通过命令手动测试运行 (立即下载): $SCRIPT_PATH run"
 }
 
 uninstall_cron() {
@@ -109,12 +112,17 @@ uninstall_cron() {
 
 # ================= 3. 核心流量任务 =================
 run_task() {
+    IS_CRON_MODE=$1
     ensure_dependencies
 
-    # 随机延迟执行
-    RANDOM_DELAY=$((RANDOM % MAX_SLEEP))
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 随机等待 $RANDOM_DELAY 秒后开始下载..."
-    sleep $RANDOM_DELAY
+    # 判断是否需要延迟：只有在 --cron 或 --delay 模式下才随机延迟
+    if [ "$IS_CRON_MODE" = "--cron" ] || [ "$IS_CRON_MODE" = "--delay" ]; then
+        RANDOM_DELAY=$((RANDOM % MAX_SLEEP))
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [定时模式] 随机等待 $RANDOM_DELAY 秒后开始下载..."
+        sleep $RANDOM_DELAY
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [手动模式] 跳过延迟，立即开始下载..."
+    fi
 
     # 挑选国内节点
     DOMESTIC_COUNT=${#DOMESTIC_URLS[@]}
@@ -149,13 +157,14 @@ case "$1" in
         uninstall_cron
         ;;
     run)
-        run_task
+        run_task "$2"
         ;;
     *)
         echo "使用说明:"
-        echo "  $0 install    - 自动安装依赖并部署定时任务"
-        echo "  $0 uninstall  - 卸载已部署的定时任务"
-        echo "  $0 run        - 立即触发一次流量任务"
+        echo "  $0 install           - 自动安装依赖并部署/更新定时任务"
+        echo "  $0 uninstall         - 卸载已部署的定时任务"
+        echo "  $0 run               - 手动运行（立即下载，不延迟）"
+        echo "  $0 run --delay       - 手动模拟运行（带随机延迟）"
         exit 1
         ;;
 esac
