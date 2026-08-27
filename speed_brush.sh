@@ -6,24 +6,21 @@ LOG_PATH="/tmp/speed_brush.log"
 
 # 最高限速 1M/s (1048576 字节/秒)
 MAX_RATE="1048576"
-# 最长运行时间: 100 秒 (在 1MB/s 下刚好跑满 100MB 流量)
+# 节点最长下载时间 (秒)：100 秒 * 1MB/s 刚好 = 100MB 流量
 MAX_TIME="100"
-# 最长随机等待时间 (秒)，20分钟内随机启动
+# 最长随机等待时间 (秒)
 MAX_SLEEP=1200
 
-# 国内非系统镜像节点池
+# 经过验证的高可用流量测试节点池 (采用动态大小/大体积真实文件)
 DOMESTIC_URLS=(
-    "https://mirrors.cloud.tencent.com/nodejs-release/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
-    "https://registry.npmmirror.com/-/binary/echarts/5.4.3/echarts-5.4.3.tgz"
-    "https://mirrors.163.com/mysql/Downloads/MySQL-8.0/mysql-8.0.36-linux-glibc2.28-x86_64.tar.xz"
-    "https://npmmirror.com/mirrors/electron/28.2.0/electron-v28.2.0-linux-x64.zip"
-    "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
-    "https://mirrors.tuna.tsinghua.edu.cn/chromium-browser-snapshots/Linux_x64/1100000/chrome-linux.zip"
-    "https://mirrors.volces.com/android/repository/android-ndk-r26b-linux.zip"
+    "https://mirrors.aliyun.com/ubuntu-releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
+    "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
+    "https://mirrors.ustc.edu.cn/ubuntu-releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
+    "https://repo.huaweicloud.com/java/jdk/8u202-b08/jdk-8u202-linux-x64.tar.gz"
 )
 
-# 国外测试节点
-FOREIGN_URL="https://speed.cloudflare.com/__down?bytes=104857600"
+# 国外流量测试节点 (Cloudflare 动态生成流，永不 404)
+FOREIGN_URL="https://speed.cloudflare.com/__down?bytes=500000000"
 
 # ================= 1. 环境自愈模块 =================
 ensure_dependencies() {
@@ -105,7 +102,10 @@ run_task() {
     IS_CRON_MODE=$1
     ensure_dependencies
 
+    # 设置 curl 的进度条显示逻辑：后台 cron 模式隐蔽输出，手动模式显示实时速率
+    CURL_SHOW_PROGRESS="--progress-bar"
     if [ "$IS_CRON_MODE" = "--cron" ] || [ "$IS_CRON_MODE" = "--delay" ]; then
+        CURL_SHOW_PROGRESS="-s"
         RANDOM_DELAY=$((RANDOM % MAX_SLEEP))
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [定时模式] 随机等待 $RANDOM_DELAY 秒后开始下载..."
         sleep $RANDOM_DELAY
@@ -113,27 +113,30 @@ run_task() {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [手动模式] 跳过延迟，立即开始下载..."
     fi
 
+    # 随机选择国内节点
     DOMESTIC_COUNT=${#DOMESTIC_URLS[@]}
     RANDOM_INDEX=$((RANDOM % DOMESTIC_COUNT))
     SELECTED_DOMESTIC_URL="${DOMESTIC_URLS[$RANDOM_INDEX]}"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始任务 (预计运行 200 秒)..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始任务 (内外网节点各跑 100 秒)..."
 
-    # 执行国内节点下载 (-L 自动追踪重定向, -m 100 限制最长运行 100 秒)
+    # 执行国内节点下载 (--fail 保证遇到404能识别, -L 跟踪重定向, -m 100 保持下载100秒)
     echo "正在从 [国内节点: $SELECTED_DOMESTIC_URL] 下载..."
-    curl -L --limit-rate $MAX_RATE \
+    curl -L --fail \
+         --limit-rate $MAX_RATE \
          -m $MAX_TIME \
-         -s -o /dev/null \
+         $CURL_SHOW_PROGRESS -o /dev/null \
          "$SELECTED_DOMESTIC_URL"
 
     # 执行国外节点下载
-    echo "正在从 [国外节点] 下载..."
-    curl -L --limit-rate $MAX_RATE \
+    echo -e "\n正在从 [国外节点] 下载..."
+    curl -L --fail \
+         --limit-rate $MAX_RATE \
          -m $MAX_TIME \
-         -s -o /dev/null \
+         $CURL_SHOW_PROGRESS -o /dev/null \
          "$FOREIGN_URL"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 本次任务已完成。"
+    echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] 本次 200MB 任务已完成。"
 }
 
 # ================= 4. 命令路由处理 =================
@@ -151,8 +154,8 @@ case "$1" in
         echo "使用说明:"
         echo "  $0 install           - 自动安装依赖并部署/更新定时任务"
         echo "  $0 uninstall         - 卸载已部署的定时任务"
-        echo "  $0 run               - 手动运行（立即下载，不延迟）"
-        echo "  $0 run --delay       - 手动模拟运行（带随机延迟）"
+        echo "  $0 run               - 手动运行（显示实时速率进度，不延迟）"
+        echo "  $0 run --delay       - 手动模拟运行（后台模式带随机延迟）"
         exit 1
         ;;
 esac
