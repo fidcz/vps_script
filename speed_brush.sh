@@ -107,7 +107,7 @@ uninstall_cron() {
     echo "[✓] 定时任务已安全清除。"
 }
 
-# ================= 3. 核心刷流量任务 =================
+# ================= 3. 核心流量任务 =================
 run_task() {
     ensure_dependencies
 
@@ -121,7 +121,7 @@ run_task() {
     RANDOM_INDEX=$((RANDOM % DOMESTIC_COUNT))
     SELECTED_DOMESTIC_URL="${DOMESTIC_URLS[$RANDOM_INDEX]}"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始刷流量任务..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始流量任务..."
 
     # 执行国内节点下载
     echo "正在从 [国内节点: $SELECTED_DOMESTIC_URL] 下载..."
@@ -137,7 +137,7 @@ run_task() {
          -s -o /dev/null \
          "$FOREIGN_URL"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 本次刷流量任务已完成。"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 本次流量任务已完成。"
 }
 
 # ================= 4. 命令路由处理 =================
@@ -155,7 +155,7 @@ case "$1" in
         echo "使用说明:"
         echo "  $0 install    - 自动安装依赖并部署定时任务"
         echo "  $0 uninstall  - 卸载已部署的定时任务"
-        echo "  $0 run        - 立即触发一次刷流量任务"
+        echo "  $0 run        - 立即触发一次流量任务"
         exit 1
         ;;
 esac
