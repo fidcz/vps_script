@@ -6,7 +6,7 @@ LOG_PATH="/tmp/speed_brush.log"
 MAX_LOG_LINES=100  # 日志最多保留行数
 
 # 单节点单次下载最长时间：180 秒 (3分钟)
-SINGLE_RUN_TIME="180"
+SINGLE_RUN_TIME="300"
 
 # 随机暂停触发概率：25%
 PAUSE_CHANCE=25
@@ -130,10 +130,10 @@ get_random_rate() {
     echo "$RATE"
 }
 
-# 生成 8 - 15 分钟 (480 - 900 秒) 的随机暂停秒数
+# 生成 3 - 8 分钟 (180 - 480 秒) 的随机暂停秒数
 get_random_pause_sec() {
-    RAND_OFFSET=$((RANDOM % 421))
-    PAUSE_SEC=$((480 + RAND_OFFSET))
+    RAND_OFFSET=$((RANDOM % 301))
+    PAUSE_SEC=$((180 + RAND_OFFSET))
     echo "$PAUSE_SEC"
 }
 
