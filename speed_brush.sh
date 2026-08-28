@@ -13,14 +13,23 @@ PAUSE_CHANCE=25
 # 伪装 User-Agent
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# 国内/国外多节点混合池
+# 国内/国外优质大文件/测速节点混合池
 NODES_POOL=(
+    # --- 国内高带宽 CDN 节点 ---
     "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
-    "https://speed.cloudflare.com/__down?bytes=500000000"
     "https://cdn.npmmirror.com/binaries/node/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
-    "https://sgp-ping.vultr.com/vultr.com.1000MB.bin"
     "https://mirrors.cloud.tencent.com/gradle/gradle-8.5-all.zip"
+    "https://mirrors.aliyun.com/macports/distfiles/MacPorts/MacPorts-2.9.1.tar.bz2"
+    "https://mirrors.ustc.edu.cn/qtproject/official_releases/qt/6.6/6.6.2/single/qt-everywhere-src-6.6.2.tar.xz"
+
+    # --- 国外/全球 CDN 测速节点 ---
+    "https://speed.cloudflare.com/__down?bytes=500000000"
+    "https://sgp-ping.vultr.com/vultr.com.1000MB.bin"
     "https://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"
+    "https://speed.hetzner.de/100MB.bin"
+    "https://proof.ovh.net/files/100Mb.dat"
+    "https://speedtest.selectel.ru/100MB.bin"
+    "https://hkg-hk-ping.vultr.com/vultr.com.1000MB.bin"
 )
 
 # 动态随机起止时间全局变量 (每日更新)
@@ -107,7 +116,6 @@ get_random_rate() {
 
 # 生成 8 - 15 分钟 (480 - 900 秒) 的随机暂停秒数
 get_random_pause_sec() {
-    # 900 - 480 = 420 秒差值
     RAND_OFFSET=$((RANDOM % 421))
     PAUSE_SEC=$((480 + RAND_OFFSET))
     echo "$PAUSE_SEC"
@@ -190,7 +198,7 @@ start_engine() {
         RAND_DICE=$((RANDOM % 100))
         if [ "$RAND_DICE" -lt "$PAUSE_CHANCE" ]; then
             PAUSE_TIME_SEC=$(get_random_pause_sec)
-            PAUSE_MIN=$(echo "scale=1; $PAUSE_TIME_SEC / 60" | bc 2>/dev/null || echo "$((PAUSE_TIME_SEC / 60))")
+            PAUSE_MIN=$(echo "scale=1; $PAUSE_TIME_SEC / 60" | bc 2>/dev/null || echo "$((PAUSE_MIN / 60))")
             
             echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 🎲 命中 25% 随机概率，暂停 $PAUSE_TIME_SEC 秒 (约 ${PAUSE_MIN} 分钟)..."
             sleep $PAUSE_TIME_SEC
