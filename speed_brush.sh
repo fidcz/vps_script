@@ -8,8 +8,8 @@ MAX_LOG_LINES=100  # 日志最多保留行数
 # 单节点单次下载最长时间：180 秒 (3分钟)
 SINGLE_RUN_TIME="300"
 
-# 随机暂停触发概率：25%
-PAUSE_CHANCE=25
+# 随机暂停触发概率：20%
+PAUSE_CHANCE=20
 
 # 伪装 User-Agent
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
