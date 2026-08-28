@@ -4,41 +4,37 @@
 SCRIPT_PATH="/usr/local/bin/speed_brush.sh"
 LOG_PATH="/tmp/speed_brush.log"
 
-# 最高限速 1M/s (1048576 字节/秒)
-MAX_RATE="1048576"
-# 最长运行时间 (秒)
-MAX_TIME="100"
-# 最长随机等待时间 (秒)
-MAX_SLEEP=1200
+# 单节点单次下载最长时间：180 秒 (3分钟)
+SINGLE_RUN_TIME="180"
+
+# 随机暂停触发概率：25%
+PAUSE_CHANCE=25
 
 # 伪装 User-Agent
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# 精简后 100% 可用且极速的国内大文件节点池
-DOMESTIC_URLS=(
+# 国内/国外多节点混合池
+NODES_POOL=(
     "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
+    "https://speed.cloudflare.com/__down?bytes=500000000"
     "https://cdn.npmmirror.com/binaries/node/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
+    "https://sgp-ping.vultr.com/vultr.com.1000MB.bin"
     "https://mirrors.cloud.tencent.com/gradle/gradle-8.5-all.zip"
+    "https://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"
 )
 
-# 经过实测在全球均能跑满带宽的国外节点池 (CDN/云厂商官方测速源)
-FOREIGN_URLS=(
-    "https://speed.cloudflare.com/__down?bytes=200000000"
-    "https://speed.hetzner.de/100MB.bin"
-    "https://sgp-ping.vultr.com/vultr.com.1000MB.bin"
-    "https://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"
-    "https://speedtest.selectel.ru/100MB.bin"
-)
+# 动态随机起止时间全局变量 (每日更新)
+START_OFFSET_SEC=0  # 07:00 后的随机延迟秒数 (0 - 1800 秒，即 0~30 分钟)
+STOP_OFFSET_SEC=0   # 01:00 后的随机延迟秒数 (0 - 1800 秒，即 0~30 分钟)
+LAST_DATE_STAMP=""
 
 # ================= 1. 环境自愈模块 =================
 ensure_dependencies() {
     if ! command -v curl >/dev/null 2>&1; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 未检测到 curl，开始自动安装..."
         install_pkg curl
     fi
 
     if ! command -v crontab >/dev/null 2>&1; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 未检测到 cron/crontab，开始自动安装..."
         if command -v apt-get >/dev/null 2>&1; then
             install_pkg cron
         elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
@@ -46,8 +42,6 @@ ensure_dependencies() {
             systemctl enable --now crond >/dev/null 2>&1 || service crond start >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then
             install_pkg dcron
-        else
-            install_pkg cron
         fi
     fi
 }
@@ -65,127 +59,167 @@ install_pkg() {
         $SUDO yum install -y "$PKG"
     elif command -v apk >/dev/null 2>&1; then
         $SUDO apk add --no-cache "$PKG"
-    elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -Sy --noconfirm "$PKG"
-    elif command -v zypper >/dev/null 2>&1; then
-        $SUDO zypper install -y "$PKG"
     fi
 }
 
-# ================= 2. Crontab 部署模块 =================
+# ================= 2. 动态随机生成模块 =================
+
+# 每天刷新一次当天的随机启动与停止点 (07:00-07:30 启动 / 01:00-01:30 停止)
+update_daily_random_offsets() {
+    TODAY=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
+    if [ "$TODAY" != "$LAST_DATE_STAMP" ]; then
+        START_OFFSET_SEC=$((RANDOM % 1801))
+        STOP_OFFSET_SEC=$((RANDOM % 1801))
+        LAST_DATE_STAMP="$TODAY"
+        
+        START_MIN=$((START_OFFSET_SEC / 60))
+        STOP_MIN=$((STOP_OFFSET_SEC / 60))
+        echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 📅 更新本日运行计划: 07:$(printf "%02d" $START_MIN) 随机启动，01:$(printf "%02d" $STOP_MIN) 随机停止"
+    fi
+}
+
+# 校验当前时间是否在允许的随机时间窗口内
+is_in_time_window() {
+    update_daily_random_offsets
+
+    TODAY_STR=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
+    START_TIMESTAMP=$(TZ='Asia/Shanghai' date -d "$TODAY_STR 07:00:00" +%s)
+    START_TIMESTAMP=$((START_TIMESTAMP + START_OFFSET_SEC))
+
+    STOP_TIMESTAMP=$(TZ='Asia/Shanghai' date -d "$TODAY_STR 01:00:00" +%s)
+    STOP_TIMESTAMP=$((STOP_TIMESTAMP + STOP_OFFSET_SEC))
+
+    CURRENT_TIMESTAMP=$(TZ='Asia/Shanghai' date +%s)
+
+    if [ "$CURRENT_TIMESTAMP" -ge "$STOP_TIMESTAMP" ] && [ "$CURRENT_TIMESTAMP" -lt "$START_TIMESTAMP" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# 生成 80KB/s ~ 100KB/s 之间的随机字节数
+get_random_rate() {
+    RAND_OFFSET=$((RANDOM % 20481))
+    RATE=$((81920 + RAND_OFFSET))
+    echo "$RATE"
+}
+
+# 生成 8 - 15 分钟 (480 - 900 秒) 的随机暂停秒数
+get_random_pause_sec() {
+    # 900 - 480 = 420 秒差值
+    RAND_OFFSET=$((RANDOM % 421))
+    PAUSE_SEC=$((480 + RAND_OFFSET))
+    echo "$PAUSE_SEC"
+}
+
+# ================= 3. Crontab 部署模块 =================
 install_cron() {
     ensure_dependencies
 
     CURRENT_SCRIPT=$(readlink -f "$0")
     if [ "$CURRENT_SCRIPT" != "$SCRIPT_PATH" ]; then
-        echo "正在复制脚本至系统路径 $SCRIPT_PATH ..."
         SUDO=""
         [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
         $SUDO cp "$CURRENT_SCRIPT" "$SCRIPT_PATH"
         $SUDO chmod +x "$SCRIPT_PATH"
     fi
 
-    CRON_CMD="*/30 * * * * $SCRIPT_PATH run --cron >> $LOG_PATH 2>&1"
+    CRON_CMD="*/10 * * * * $SCRIPT_PATH daemon >> $LOG_PATH 2>&1"
     EXISTING_CRON=$(crontab -l 2>/dev/null)
 
     if echo "$EXISTING_CRON" | grep -Fq "$SCRIPT_PATH"; then
-        echo "正在更新已有的 Crontab 定时任务配置..."
         (echo "$EXISTING_CRON" | grep -v "$SCRIPT_PATH"; echo "$CRON_CMD") | crontab -
-        echo "[✓] Crontab 定时任务更新成功！"
+        echo "[✓] Crontab 守护进程已更新！"
     else
-        echo "正在写入 Crontab 定时任务 (每30分钟执行一次)..."
         (echo "$EXISTING_CRON"; echo "$CRON_CMD") | crontab -
-        echo "[✓] 部署完成！Crontab 已就绪。"
+        echo "[✓] Crontab 守护进程部署完成！"
     fi
 }
 
 uninstall_cron() {
-    echo "正在卸载定时任务..."
     crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
-    echo "[✓] 定时任务已安全清除。"
+    pkill -f "$SCRIPT_PATH" 2>/dev/null
+    echo "[✓] 定时任务与后台进程已彻底卸载。"
 }
 
-# ================= 3. 下载执行模块 (带过低速率防护) =================
-download_with_retry() {
-    local -n urls=$1
-    local mode_name=$2
-    local progress_flag=$3
-    
-    local count=${#urls[@]}
-    local start_index=$((RANDOM % count))
-    
-    for ((i=0; i<count; i++)); do
-        local idx=$(((start_index + i) % count))
-        local target_url="${urls[$idx]}"
-        
-        echo -e "\n正在从 [$mode_name: $target_url] 下载..."
-        
-        # -Y 200000 -y 15: 如果连续 15 秒速度低于 200KB/s，自动放弃并尝试下一个更快的节点
-        curl -L --fail \
-             -A "$UA" \
-             --limit-rate $MAX_RATE \
-             -m $MAX_TIME \
-             -Y 200000 -y 15 \
-             $progress_flag -o /dev/null \
-             "$target_url"
-        
-        local exit_code=$?
-        # 0: 正常完成, 28: 达到指定 MAX_TIME (已成功达到100MB流量)
-        if [ $exit_code -eq 0 ] || [ $exit_code -eq 28 ]; then
-            echo -e "\n[$mode_name] 传输完成 (100MB)。"
-            return 0
-        else
-            echo -e "\n[警告] 该节点速度过慢或连接中断 (退出码: $exit_code)，自动切换下一个节点..."
-        fi
-    done
-
-    echo "[错误] $mode_name 所有备用节点均无法满足速率要求！"
-    return 1
-}
-
-# ================= 4. 核心任务 =================
-run_task() {
-    IS_CRON_MODE=$1
+# ================= 4. 主循环引擎 =================
+start_engine() {
     ensure_dependencies
 
-    CURL_SHOW_PROGRESS="--progress-bar"
-    if [ "$IS_CRON_MODE" = "--cron" ] || [ "$IS_CRON_MODE" = "--delay" ]; then
-        CURL_SHOW_PROGRESS="-s"
-        RANDOM_DELAY=$((RANDOM % MAX_SLEEP))
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [定时模式] 随机等待 $RANDOM_DELAY 秒后开始下载..."
-        sleep $RANDOM_DELAY
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [手动模式] 跳过延迟，立即开始下载..."
+    PIDFILE="/tmp/speed_brush.pid"
+    if [ -f "$PIDFILE" ]; then
+        OLD_PID=$(cat "$PIDFILE")
+        if kill -0 "$OLD_PID" 2>/dev/null; then
+            exit 0
+        fi
     fi
+    echo $$ > "$PIDFILE"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始任务 (内外网节点各跑 100 秒)..."
+    echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 引擎已启动 (全随机: 80k-100k/s 速率, 8-15分钟 随机暂停)..."
 
-    # 执行国内节点下载
-    download_with_retry DOMESTIC_URLS "国内节点" "$CURL_SHOW_PROGRESS"
+    while true; do
+        # 1. 动态时间窗口判断
+        if ! is_in_time_window; then
+            echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] [休眠] 当前属于深夜休息时间段，休眠 10 分钟后复查..."
+            sleep 600
+            continue
+        fi
 
-    # 执行国外节点下载
-    download_with_retry FOREIGN_URLS "国外节点" "$CURL_SHOW_PROGRESS"
+        # 2. 从节点池随机挑选节点
+        COUNT=${#NODES_POOL[@]}
+        RAND_IDX=$((RANDOM % COUNT))
+        TARGET_URL="${NODES_POOL[$RAND_IDX]}"
 
-    echo -e "\n[$(date '+%Y-%m-%d %H:%M:%S')] 本次任务全部结束。"
+        # 3. 动态获取本次下载的随机速率限制 (80k - 100k/s)
+        CURRENT_RATE=$(get_random_rate)
+        DISPLAY_RATE_KB=$(echo "scale=1; $CURRENT_RATE / 1024" | bc 2>/dev/null || echo "$((CURRENT_RATE / 1024))")
+
+        echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 开始下载: $TARGET_URL (限速: ${DISPLAY_RATE_KB} KB/s)"
+
+        # 4. 执行下载
+        curl -L --fail \
+             -A "$UA" \
+             --limit-rate $CURRENT_RATE \
+             -m $SINGLE_RUN_TIME \
+             -Y 20000 -y 15 \
+             -s -o /dev/null \
+             "$TARGET_URL"
+
+        # 5. 随机暂停判定 (命中概率后，在 8-15 分钟内随机暂停)
+        RAND_DICE=$((RANDOM % 100))
+        if [ "$RAND_DICE" -lt "$PAUSE_CHANCE" ]; then
+            PAUSE_TIME_SEC=$(get_random_pause_sec)
+            PAUSE_MIN=$(echo "scale=1; $PAUSE_TIME_SEC / 60" | bc 2>/dev/null || echo "$((PAUSE_TIME_SEC / 60))")
+            
+            echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 🎲 命中 25% 随机概率，暂停 $PAUSE_TIME_SEC 秒 (约 ${PAUSE_MIN} 分钟)..."
+            sleep $PAUSE_TIME_SEC
+        else
+            # 未命中时，随机微小休眠 5-15 秒
+            MINI_SLEEP=$((5 + RANDOM % 11))
+            sleep $MINI_SLEEP
+        fi
+    done
 }
 
-# ================= 5. 命令路由处理 =================
+# ================= 5. 命令路由 =================
 case "$1" in
     install)
         install_cron
+        nohup $SCRIPT_PATH daemon >> $LOG_PATH 2>&1 &
+        echo "[✓] 全随机模式服务已在后台启动！"
         ;;
     uninstall)
         uninstall_cron
         ;;
-    run)
-        run_task "$2"
+    daemon|run)
+        start_engine
         ;;
     *)
         echo "使用说明:"
-        echo "  $0 install           - 自动安装依赖并部署/更新定时任务"
-        echo "  $0 uninstall         - 卸载已部署的定时任务"
-        echo "  $0 run               - 手动运行（显示实时速率进度，不延迟）"
-        echo "  $0 run --delay       - 手动模拟运行（后台模式带随机延迟）"
+        echo "  $0 install     - 部署后台守护任务并启动长效循环引擎"
+        echo "  $0 uninstall   - 停止并卸载守护任务"
+        echo "  $0 run         - 前台运行引擎（方便实时查看调试日志）"
         exit 1
         ;;
 esac
