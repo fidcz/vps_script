@@ -23,14 +23,14 @@ NODES_POOL=(
     "https://mirrors.aliyun.com/macports/distfiles/MacPorts/MacPorts-2.9.1.tar.bz2"
     "https://mirrors.ustc.edu.cn/qtproject/official_releases/qt/6.6/6.6.2/single/qt-everywhere-src-6.6.2.tar.xz"
 
-    # --- 国外/全球 CDN 测速节点 ---
+    # --- 国外/全球稳定 CDN 测速节点 (替换了不稳定的 selectel / vultr) ---
     "https://speed.cloudflare.com/__down?bytes=500000000"
-    "https://sgp-ping.vultr.com/vultr.com.1000MB.bin"
     "https://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"
+    "https://speedtest.singapore.linode.com/100MB-singapore.bin"
     "https://speed.hetzner.de/100MB.bin"
     "https://proof.ovh.net/files/100Mb.dat"
-    "https://speedtest.selectel.ru/100MB.bin"
-    "https://hkg-hk-ping.vultr.com/vultr.com.1000MB.bin"
+    "https://old-releases.ubuntu.com/releases/22.04.4/ubuntu-22.04.4-live-server-amd64.iso"
+    "https://cdn.npmmirror.com/binaries/node/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
 )
 
 # 动态随机起止时间全局变量 (每日更新)
