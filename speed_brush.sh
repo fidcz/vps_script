@@ -3,6 +3,7 @@
 # ================= 配置项 =================
 SCRIPT_PATH="/usr/local/bin/speed_brush.sh"
 LOG_PATH="/tmp/speed_brush.log"
+MAX_LOG_LINES=100  # 日志最多保留行数
 
 # 单节点单次下载最长时间：180 秒 (3分钟)
 SINGLE_RUN_TIME="180"
@@ -37,7 +38,7 @@ START_OFFSET_SEC=0  # 07:00 后的随机延迟秒数 (0 - 1800 秒，即 0~30 �
 STOP_OFFSET_SEC=0   # 01:00 后的随机延迟秒数 (0 - 1800 秒，即 0~30 分钟)
 LAST_DATE_STAMP=""
 
-# ================= 1. 环境自愈模块 =================
+# ================= 1. 环境与日志管理 =================
 ensure_dependencies() {
     if ! command -v curl >/dev/null 2>&1; then
         install_pkg curl
@@ -71,6 +72,17 @@ install_pkg() {
     fi
 }
 
+# 自动截断日志，防止日志文件无限变大
+truncate_log() {
+    if [ -f "$LOG_PATH" ]; then
+        LINE_COUNT=$(wc -l < "$LOG_PATH" 2>/dev/null || echo 0)
+        if [ "$LINE_COUNT" -gt "$MAX_LOG_LINES" ]; then
+            TAIL_TMP=$(tail -n "$MAX_LOG_LINES" "$LOG_PATH")
+            echo "$TAIL_TMP" > "$LOG_PATH"
+        fi
+    fi
+}
+
 # ================= 2. 动态随机生成模块 =================
 
 # 每天刷新一次当天的随机启动与停止点 (07:00-07:30 启动 / 01:00-01:30 停止)
@@ -83,6 +95,10 @@ update_daily_random_offsets() {
         
         START_MIN=$((START_OFFSET_SEC / 60))
         STOP_MIN=$((STOP_OFFSET_SEC / 60))
+        
+        # 顺便清理超长旧日志
+        truncate_log
+        
         echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 📅 更新本日运行计划: 07:$(printf "%02d" $START_MIN) 随机启动，01:$(printf "%02d" $STOP_MIN) 随机停止"
     fi
 }
@@ -165,7 +181,7 @@ uninstall_cron() {
         rm -f "$PIDFILE"
     fi
 
-    # 3. 安全清理后台 daemon 进程 (通过 grep -v "^$$$" 排除当前脚本自身的 PID，防止整条命令中断)
+    # 3. 安全清理后台 daemon 进程 (排除自身 PID，防止整条命令中断)
     MY_PID=$$
     OTHER_PIDS=$(pgrep -f "$SCRIPT_PATH" 2>/dev/null | grep -v "^${MY_PID}$")
     if [ -n "$OTHER_PIDS" ]; then
@@ -188,6 +204,7 @@ start_engine() {
     fi
     echo $$ > "$PIDFILE"
 
+    truncate_log
     echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 引擎已启动 (全随机: 80k-100k/s 速率, 8-15分钟 随机暂停)..."
 
     while true; do
@@ -205,9 +222,6 @@ start_engine() {
 
         # 3. 动态获取本次下载的随机速率限制 (80k - 100k/s)
         CURRENT_RATE=$(get_random_rate)
-        DISPLAY_RATE_KB=$(format_sec_to_min $((CURRENT_RATE * 60 / 1024))) # 计算并显示真实 KB/s
-
-        # 计算约数 KB/s
         RATE_KB=$((CURRENT_RATE / 1024))
 
         echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 开始下载: $TARGET_URL (限速: ${RATE_KB} KB/s)"
