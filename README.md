@@ -14,10 +14,14 @@ curl -o trojan_install.sh https://raw.githubusercontent.com/fidcz/vps_script/ref
 
 ## speed_brush.sh
 > 自动刷流量  
-### 首次安装
+### 首次安装  
 ```
 curl -fsSL https://raw.githubusercontent.com/fidcz/vps_script/refs/heads/main/speed_brush.sh -o /usr/local/bin/speed_brush.sh && chmod +x /usr/local/bin/speed_brush.sh && /usr/local/bin/speed_brush.sh install
 ```
+### 一键更新  
+```
+/usr/local/bin/speed_brush.sh uninstall && curl -fsSL https://raw.githubusercontent.com/fidcz/vps_script/main/speed_brush.sh -o /usr/local/bin/speed_brush.sh && chmod +x /usr/local/bin/speed_brush.sh && /usr/local/bin/speed_brush.sh install
+```  
 部署命令：./speed_brush.sh install（检查环境、安装依赖、自动写入 crontab）   
 立即测试运行：./speed_brush.sh run   
 查看实时运行日志：tail -f /tmp/speed_brush.log   
