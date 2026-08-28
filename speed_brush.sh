@@ -147,7 +147,18 @@ install_cron() {
 
 uninstall_cron() {
     crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
-    pkill -f "$SCRIPT_PATH" 2>/dev/null
+    
+    # 获取后台 daemon 进程的 PID，精确杀死，避免误杀当前终端命令
+    PIDFILE="/tmp/speed_brush.pid"
+    if [ -f "$PIDFILE" ]; then
+        OLD_PID=$(cat "$PIDFILE")
+        kill -9 "$OLD_PID" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    
+    # 兜底清理其他后台进程（排除自身 PID $$）
+    pgrep -f "$SCRIPT_PATH" | grep -v "^$$$" | xargs -r kill -9 2>/dev/null
+    
     echo "[✓] 定时任务与后台进程已彻底卸载。"
 }
 
