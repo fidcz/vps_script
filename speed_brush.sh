@@ -13,7 +13,7 @@ PAUSE_CHANCE=25
 # 伪装 User-Agent
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# 国内/国外优质大文件/测速节点混合池
+# 国内/国外优质大文件/测速节点混合池 (全球 CDN + 官方长期保留包)
 NODES_POOL=(
     # --- 国内高带宽 CDN 节点 ---
     "https://repo.huaweicloud.com/python/3.11.8/Python-3.11.8.tar.xz"
@@ -121,7 +121,15 @@ get_random_pause_sec() {
     echo "$PAUSE_SEC"
 }
 
-# ================= 3. Crontab 部署模块 =================
+# 纯 Bash 格式化秒数为保留 1 位小数的分钟显示 (格式: X.Y)
+format_sec_to_min() {
+    local sec=$1
+    local min=$((sec / 60))
+    local remainder_tenths=$(( (sec % 60) * 10 / 60 ))
+    echo "${min}.${remainder_tenths}"
+}
+
+# ================= 3. Crontab 与安全卸载模块 =================
 install_cron() {
     ensure_dependencies
 
@@ -146,19 +154,24 @@ install_cron() {
 }
 
 uninstall_cron() {
+    # 1. 清理 crontab 定时任务
     crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
-    
-    # 获取后台 daemon 进程的 PID，精确杀死，避免误杀当前终端命令
+
+    # 2. 从 PID 文件精确清理后台引擎进程
     PIDFILE="/tmp/speed_brush.pid"
     if [ -f "$PIDFILE" ]; then
         OLD_PID=$(cat "$PIDFILE")
         kill -9 "$OLD_PID" 2>/dev/null
         rm -f "$PIDFILE"
     fi
-    
-    # 兜底清理其他后台进程（排除自身 PID $$）
-    pgrep -f "$SCRIPT_PATH" | grep -v "^$$$" | xargs -r kill -9 2>/dev/null
-    
+
+    # 3. 安全清理后台 daemon 进程 (通过 grep -v "^$$$" 排除当前脚本自身的 PID，防止整条命令中断)
+    MY_PID=$$
+    OTHER_PIDS=$(pgrep -f "$SCRIPT_PATH" 2>/dev/null | grep -v "^${MY_PID}$")
+    if [ -n "$OTHER_PIDS" ]; then
+        echo "$OTHER_PIDS" | xargs -r kill -9 2>/dev/null
+    fi
+
     echo "[✓] 定时任务与后台进程已彻底卸载。"
 }
 
@@ -192,9 +205,12 @@ start_engine() {
 
         # 3. 动态获取本次下载的随机速率限制 (80k - 100k/s)
         CURRENT_RATE=$(get_random_rate)
-        DISPLAY_RATE_KB=$(echo "scale=1; $CURRENT_RATE / 1024" | bc 2>/dev/null || echo "$((CURRENT_RATE / 1024))")
+        DISPLAY_RATE_KB=$(format_sec_to_min $((CURRENT_RATE * 60 / 1024))) # 计算并显示真实 KB/s
 
-        echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 开始下载: $TARGET_URL (限速: ${DISPLAY_RATE_KB} KB/s)"
+        # 计算约数 KB/s
+        RATE_KB=$((CURRENT_RATE / 1024))
+
+        echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 开始下载: $TARGET_URL (限速: ${RATE_KB} KB/s)"
 
         # 4. 执行下载
         curl -L --fail \
@@ -209,9 +225,9 @@ start_engine() {
         RAND_DICE=$((RANDOM % 100))
         if [ "$RAND_DICE" -lt "$PAUSE_CHANCE" ]; then
             PAUSE_TIME_SEC=$(get_random_pause_sec)
-            PAUSE_MIN=$(echo "scale=1; $PAUSE_TIME_SEC / 60" | bc 2>/dev/null || echo "$((PAUSE_MIN / 60))")
+            PAUSE_MIN_DISP=$(format_sec_to_min $PAUSE_TIME_SEC)
             
-            echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 🎲 命中 25% 随机概率，暂停 $PAUSE_TIME_SEC 秒 (约 ${PAUSE_MIN} 分钟)..."
+            echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 🎲 命中 25% 随机概率，暂停 $PAUSE_TIME_SEC 秒 (约 ${PAUSE_MIN_DISP} 分钟)..."
             sleep $PAUSE_TIME_SEC
         else
             # 未命中时，随机微小休眠 5-15 秒
