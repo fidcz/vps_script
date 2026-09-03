@@ -124,14 +124,30 @@ update_huawei_dns() {
     body="{\"name\":\"${DNS_RECORD_NAME}\",\"type\":\"A\",\"records\":[\"${TARGET_IP}\"]}"
     x_sdk_date=$(date -u +"%Y%m%dT%H%M%SZ")
 
-    canonical_headers="content-type:application/json\nhost:${endpoint}\nx-sdk-date:${x_sdk_date}\n"
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(sha256_hex "$body")
 
-    canonical_request="${method}\n${path}/\n\n${canonical_headers}\n${signed_headers}\n${body_hash}"
+    # 修正 1：使用 true line breaks (真正的换行) 拼接 Canonical Headers
+    canonical_headers="content-type:application/json
+host:${endpoint}
+x-sdk-date:${x_sdk_date}
+"
+
+    # 修正 2：去除 path 后的斜杠，使用 true line breaks 拼接 Canonical Request
+    canonical_request="${method}
+${path}
+
+${canonical_headers}
+${signed_headers}
+${body_hash}"
+
     canonical_hash=$(sha256_hex "$canonical_request")
 
-    string_to_sign="SDK-HMAC-SHA256\n${x_sdk_date}\n${canonical_hash}"
+    # 修正 3：使用 true line breaks 拼接 StringToSign
+    string_to_sign="SDK-HMAC-SHA256
+${x_sdk_date}
+${canonical_hash}"
+
     signature=$(hmac_sha256_hex "$HUAWEI_SK" "$string_to_sign")
     authorization="SDK-HMAC-SHA256 Access=${HUAWEI_AK}, SignedHeaders=${signed_headers}, Signature=${signature}"
 
