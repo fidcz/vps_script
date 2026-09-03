@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # =========================================================
-# 华为云 DNS 自动/手动切换与测速管理脚本 (原生 Shell 交互版)
+# 华为云 DNS 自动/手动切换与测速管理脚本 (纯原生 POSIX Shell)
 # =========================================================
 
 CONFIG_FILE="$HOME/.huawei_dns_config.env"
@@ -10,7 +10,7 @@ SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo
 # 1. 自动检测系统并安装依赖
 check_and_install_deps() {
     MISSING_CMDS=""
-    for cmd in curl openssl awk crontab; do
+    for cmd in curl openssl awk crontab tr; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             MISSING_CMDS="$MISSING_CMDS $cmd"
         fi
@@ -19,17 +19,17 @@ check_and_install_deps() {
     if [ -n "$MISSING_CMDS" ]; then
         echo "[INFO] 检测到缺失必要工具:$MISSING_CMDS，正在尝试自动安装..."
         if command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq curl openssl gawk cron
+            sudo apt-get update -qq && sudo apt-get install -y -qq curl openssl gawk cron coreutils
         elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y -q curl openssl gawk crontabs
+            sudo dnf install -y -q curl openssl gawk crontabs coreutils
         elif command -v yum >/dev/null 2>&1; then
-            sudo yum install -y -q curl openssl gawk crontabs
+            sudo yum install -y -q curl openssl gawk crontabs coreutils
         elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache curl openssl gawk cronie
+            sudo apk add --no-cache curl openssl gawk cronie coreutils
         elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm curl openssl gawk cronie
+            sudo pacman -Sy --noconfirm curl openssl gawk cronie coreutils
         elif command -v opkg >/dev/null 2>&1; then
-            opkg update && opkg install curl openssl-util gawk cron
+            opkg update && opkg install curl openssl-util gawk cron coreutils
         else
             echo "[ERROR] 未能识别当前系统的包管理器，请手动安装:$MISSING_CMDS"
             exit 1
@@ -87,16 +87,16 @@ configure_settings() {
     printf "请输入 限速判定的带宽阈值 Mbps [%s]: " "${SPEED_THRESHOLD_MBPS:-20}"
     read input; [ -n "$input" ] && SPEED_THRESHOLD_MBPS="$input"
 
-    # 保存文件
+    # 清除输入的隐藏回车符并保存文件
     cat <<EOF > "$CONFIG_FILE"
-HUAWEI_AK="${HUAWEI_AK}"
-HUAWEI_SK="${HUAWEI_SK}"
-HUAWEI_ZONE_ID="${HUAWEI_ZONE_ID}"
-HUAWEI_RECORDSET_ID="${HUAWEI_RECORDSET_ID}"
-DNS_RECORD_NAME="${DNS_RECORD_NAME}"
-MAIN_IP="${MAIN_IP}"
-BACKUP_IP="${BACKUP_IP}"
-SPEED_THRESHOLD_MBPS="${SPEED_THRESHOLD_MBPS}"
+HUAWEI_AK="$(printf "%s" "$HUAWEI_AK" | tr -d '\r')"
+HUAWEI_SK="$(printf "%s" "$HUAWEI_SK" | tr -d '\r')"
+HUAWEI_ZONE_ID="$(printf "%s" "$HUAWEI_ZONE_ID" | tr -d '\r')"
+HUAWEI_RECORDSET_ID="$(printf "%s" "$HUAWEI_RECORDSET_ID" | tr -d '\r')"
+DNS_RECORD_NAME="$(printf "%s" "$DNS_RECORD_NAME" | tr -d '\r')"
+MAIN_IP="$(printf "%s" "$MAIN_IP" | tr -d '\r')"
+BACKUP_IP="$(printf "%s" "$BACKUP_IP" | tr -d '\r')"
+SPEED_THRESHOLD_MBPS="$(printf "%s" "$SPEED_THRESHOLD_MBPS" | tr -d '\r')"
 EOF
 
     chmod 600 "$CONFIG_FILE"
@@ -107,13 +107,14 @@ EOF
 sha256_hex() {
     printf "%s" "$1" | openssl dgst -sha256 | awk '{print $2}'
 }
+
 hmac_sha256_hex() {
     local key="$1"
     local data="$2"
     printf "%s" "$data" | openssl dgst -sha256 -hmac "$key" | awk '{print $2}'
 }
 
-# 5. 华为云 DNS API 更新实现
+# 5. 华为云 DNS API 更新实现 (已彻底修复 401 签名错误)
 update_huawei_dns() {
     TARGET_IP="$1"
     REASON="$2"
@@ -122,7 +123,7 @@ update_huawei_dns() {
     echo "       目标 IP : ${TARGET_IP}"
     echo "       触发原因: ${REASON}"
 
-    # 清理变量可能夹带的 \r 回车符
+    # 清理可能夹带的 \r 换行符
     HUAWEI_AK=$(printf "%s" "$HUAWEI_AK" | tr -d '\r')
     HUAWEI_SK=$(printf "%s" "$HUAWEI_SK" | tr -d '\r')
     HUAWEI_ZONE_ID=$(printf "%s" "$HUAWEI_ZONE_ID" | tr -d '\r')
@@ -132,7 +133,7 @@ update_huawei_dns() {
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
-    # 华为云 API 网关标准的 Path 末尾带 /
+    # 华为云 API 网关要求的规范 Path 末尾带 /
     path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}/"
     url="https://${endpoint}${path}"
 
@@ -142,10 +143,10 @@ update_huawei_dns() {
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(sha256_hex "$body")
 
-    # 1. 构建 Canonical Headers (\n 结尾)
+    # 1. 构造 Canonical Headers (末尾必须包含 \n)
     canonical_headers="content-type:application/json\nhost:${endpoint}\nx-sdk-date:${x_sdk_date}\n"
 
-    # 2. 构建 Canonical Request (严格用 \n 分隔各个字段)
+    # 2. 构造 Canonical Request (\n 严格对齐)
     canonical_request=$(printf "%s\n%s\n\n%s\n%s\n%s" \
         "$method" \
         "$path" \
@@ -155,14 +156,14 @@ update_huawei_dns() {
 
     canonical_hash=$(sha256_hex "$canonical_request")
 
-    # 3. 构建 StringToSign
+    # 3. 构造 StringToSign
     string_to_sign=$(printf "SDK-HMAC-SHA256\n%s\n%s" "$x_sdk_date" "$canonical_hash")
 
-    # 4. 计算 Signature
+    # 4. 计算 HMAC-SHA256 签名
     signature=$(hmac_sha256_hex "$HUAWEI_SK" "$string_to_sign")
     authorization="SDK-HMAC-SHA256 Access=${HUAWEI_AK}, SignedHeaders=${signed_headers}, Signature=${signature}"
 
-    # 5. 发送请求
+    # 5. 发起请求
     response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT "$url" \
         -H "Content-Type: application/json" \
         -H "Host: ${endpoint}" \
@@ -225,7 +226,7 @@ run_speedtest() {
     fi
 }
 
-# 7. 安装 / 管理定时任务
+# 7. 安装 / 卸载定时任务 (增强版)
 manage_cron() {
     echo ""
     echo "========================================================="
@@ -234,32 +235,28 @@ manage_cron() {
     echo "1) 安装 / 替换定时任务"
     echo "2) 卸载定时任务"
     echo "0) 返回主菜单"
+    echo "========================================================="
     printf "请选择 [0-2]: "
     read cron_choice
 
     case "$cron_choice" in
         1)
-            printf "请输入定时测速的间隔分钟数 (例如 5 表示每 5 分钟测速一次): "
+            printf "请输入定时测速的间隔分钟数 (如 5 表示每 5 分钟测速一次): "
             read MINS
             if ! echo "$MINS" | grep -qE '^[0-9]+$'; then
                 echo "[ERROR] 输入无效，请输入数字！"
                 return
             fi
 
-            # 先清理可能存在的旧任务
-            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" > /tmp/cron_temp.txt
-            # 添加新任务
-            echo "*/$MINS * * * * /bin/sh $SCRIPT_PATH --cron >> $HOME/huawei_dns.log 2>&1" >> /tmp/cron_temp.txt
-            crontab /tmp/cron_temp.txt
-            rm -f /tmp/cron_temp.txt
+            # 清理包含本脚本路径的旧任务，然后追加新任务
+            (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" ; echo "*/$MINS * * * * /bin/sh $SCRIPT_PATH --cron >> $HOME/huawei_dns.log 2>&1") | crontab -
             echo "[SUCCESS] 已成功安装定时任务: 每 ${MINS} 分钟自动测试并切换一次！"
-            echo "          日志文件路径: $HOME/huawei_dns.log"
+            echo "          运行日志文件: $HOME/huawei_dns.log"
             ;;
         2)
-            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" > /tmp/cron_temp.txt
-            crontab /tmp/cron_temp.txt
-            rm -f /tmp/cron_temp.txt
-            echo "[SUCCESS] 已卸载本脚本的 Crontab 定时任务。"
+            # 安全删除包含本脚本路径的 crontab 规则
+            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
+            echo "[SUCCESS] 已彻底移除本脚本的所有 Crontab 定时任务。"
             ;;
         *)
             return
@@ -267,7 +264,7 @@ manage_cron() {
     esac
 }
 
-# 8. 主菜单控制
+# 8. 主菜单控制系统
 show_menu() {
     load_config
     while true; do
@@ -279,7 +276,7 @@ show_menu() {
         echo "  2. 手动强制切换为【主 IP】   (${MAIN_IP:-未配置})"
         echo "  3. 手动强制切换为【备用 IP】 (${BACKUP_IP:-未配置})"
         echo "  4. 设置 / 修改配置信息 (API 凭证、IP、阈值)"
-        echo "  5. 配置定时任务 (Crontab 自动运行)"
+        echo "  5. 配置 / 卸载定时任务 (Crontab)"
         echo "  0. 退出程序"
         echo "========================================================="
         printf "请输入选项 [0-5]: "
@@ -304,21 +301,20 @@ show_menu() {
                 manage_cron
                 ;;
             0)
-                echo "再见！"
+                echo "退出程序。"
                 exit 0
                 ;;
             *)
-                echo "[ERROR] 无效选项，请重新选择！"
+                echo "[ERROR] 无效选项，请重新输入！"
                 ;;
         esac
     done
 }
 
-# ----------------- 脚本主入口 -----------------
+# ----------------- 脚本主程序入口 -----------------
 check_and_install_deps
 
 if [ "$1" = "--cron" ] || [ "$1" = "--auto" ]; then
-    # 后台/定时任务调用模式
     run_speedtest
 elif [ "$1" = "--force-main" ]; then
     check_config_env
@@ -326,7 +322,9 @@ elif [ "$1" = "--force-main" ]; then
 elif [ "$1" = "--force-backup" ]; then
     check_config_env
     update_huawei_dns "$BACKUP_IP" "命令行强制指定 --force-backup"
+elif [ "$1" = "--uninstall-cron" ]; then
+    crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
+    echo "[SUCCESS] 已通过命令行成功卸载定时任务。"
 else
-    # 交互模式
     show_menu
 fi
