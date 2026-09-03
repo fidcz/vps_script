@@ -1,35 +1,16 @@
 #!/bin/sh
 
 # =========================================================
-# 带宽峰值探测 & 华为云 DNS 自动双向切换脚本 (纯原生 Shell)
+# 华为云 DNS 自动/手动切换与测速管理脚本 (原生 Shell 交互版)
 # =========================================================
 
-# ----------------- 用户配置变量 -----------------
-SPEED_THRESHOLD_MBPS=20         # 触发阈值 (Mbps)
-MAIN_IP="1.1.1.1"               # 主 IP (网速正常/大于等于20Mbps时使用)
-BACKUP_IP="2.2.2.2"             # 备用 IP (网速受限/低于20Mbps时使用)
+CONFIG_FILE="$HOME/.huawei_dns_config.env"
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$PWD/$0")"
 
-# 华为云 API 参数
-HUAWEI_AK="你的HUAWEI_AK"
-HUAWEI_SK="你的HUAWEI_SK"
-HUAWEI_ZONE_ID="xxx"
-HUAWEI_RECORDSET_ID="xxx"
-DNS_RECORD_NAME="example.com."  # 域名记录名称 (注意末尾保留半角点号)
-
-# 测速节点池 (阿里云镜像站)
-NODES_1="https://mirrors.aliyun.com/ubuntu/ls-lR.gz"
-NODES_2="https://mirrors.aliyun.com/debian/ls-lR.gz"
-NODES_3="https://mirrors.aliyun.com/centos/8-stream/isos/x86_64/CHECKSUM"
-NODES_4="https://mirrors.aliyun.com/epel/7/x86_64/Packages/a/a2ps-4.14-23.el7.x86_64.rpm"
-
-THREADS=4
-DURATION=3
-# -------------------------------------------------
-
-# 1. 自动检测系统并补齐缺失依赖
+# 1. 自动检测系统并安装依赖
 check_and_install_deps() {
     MISSING_CMDS=""
-    for cmd in curl openssl awk; do
+    for cmd in curl openssl awk crontab; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             MISSING_CMDS="$MISSING_CMDS $cmd"
         fi
@@ -37,38 +18,103 @@ check_and_install_deps() {
 
     if [ -n "$MISSING_CMDS" ]; then
         echo "[INFO] 检测到缺失必要工具:$MISSING_CMDS，正在尝试自动安装..."
-        
-        # 识别系统包管理器并安装
         if command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq curl openssl gawk
+            sudo apt-get update -qq && sudo apt-get install -y -qq curl openssl gawk cron
         elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y -q curl openssl gawk
+            sudo dnf install -y -q curl openssl gawk crontabs
         elif command -v yum >/dev/null 2>&1; then
-            sudo yum install -y -q curl openssl gawk
+            sudo yum install -y -q curl openssl gawk crontabs
         elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache curl openssl gawk
+            sudo apk add --no-cache curl openssl gawk cronie
         elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm curl openssl gawk
+            sudo pacman -Sy --noconfirm curl openssl gawk cronie
         elif command -v opkg >/dev/null 2>&1; then
-            opkg update && opkg install curl openssl-util gawk
+            opkg update && opkg install curl openssl-util gawk cron
         else
             echo "[ERROR] 未能识别当前系统的包管理器，请手动安装:$MISSING_CMDS"
             exit 1
         fi
-        echo "[INFO] 依赖工具安装完成！"
     fi
 }
 
-# HMAC-SHA256 签名辅助函数
+# 2. 加载本地配置文件
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        . "$CONFIG_FILE"
+    fi
+}
+
+# 3. 校验必要配置是否存在
+check_config_env() {
+    load_config
+    if [ -z "$HUAWEI_AK" ] || [ -z "$HUAWEI_SK" ] || [ -z "$HUAWEI_ZONE_ID" ] || \
+       [ -z "$HUAWEI_RECORDSET_ID" ] || [ -z "$DNS_RECORD_NAME" ] || \
+       [ -z "$MAIN_IP" ] || [ -z "$BACKUP_IP" ] || [ -z "$SPEED_THRESHOLD_MBPS" ]; then
+        echo "[WARNING] 关键配置尚未设置或不完整！"
+        configure_settings
+    fi
+}
+
+# 4. 交互式设置与保存配置
+configure_settings() {
+    load_config
+    echo ""
+    echo "========================================================="
+    echo "               设置 / 修改系统参数"
+    echo "========================================================="
+    
+    printf "请输入 华为云 HUAWEI_AK [%s]: " "${HUAWEI_AK:-}"
+    read input; [ -n "$input" ] && HUAWEI_AK="$input"
+
+    printf "请输入 华为云 HUAWEI_SK [%s]: " "${HUAWEI_SK:-}"
+    read input; [ -n "$input" ] && HUAWEI_SK="$input"
+
+    printf "请输入 HUAWEI_ZONE_ID [%s]: " "${HUAWEI_ZONE_ID:-ff8080829ffb1be501a064d68398469a}"
+    read input; [ -n "$input" ] && HUAWEI_ZONE_ID="$input"
+
+    printf "请输入 HUAWEI_RECORDSET_ID [%s]: " "${HUAWEI_RECORDSET_ID:-ff8080829ffaffa101a064d826650b61}"
+    read input; [ -n "$input" ] && HUAWEI_RECORDSET_ID="$input"
+
+    printf "请输入 域名解析记录名称 (如 example.com.) [%s]: " "${DNS_RECORD_NAME:-example.com.}"
+    read input; [ -n "$input" ] && DNS_RECORD_NAME="$input"
+
+    printf "请输入 主 IP 地址 (正常节点) [%s]: " "${MAIN_IP:-1.1.1.1}"
+    read input; [ -n "$input" ] && MAIN_IP="$input"
+
+    printf "请输入 备用 IP 地址 (降级节点) [%s]: " "${BACKUP_IP:-2.2.2.2}"
+    read input; [ -n "$input" ] && BACKUP_IP="$input"
+
+    printf "请输入 限速判定的带宽阈值 Mbps [%s]: " "${SPEED_THRESHOLD_MBPS:-20}"
+    read input; [ -n "$input" ] && SPEED_THRESHOLD_MBPS="$input"
+
+    # 保存文件
+    cat <<EOF > "$CONFIG_FILE"
+HUAWEI_AK="${HUAWEI_AK}"
+HUAWEI_SK="${HUAWEI_SK}"
+HUAWEI_ZONE_ID="${HUAWEI_ZONE_ID}"
+HUAWEI_RECORDSET_ID="${HUAWEI_RECORDSET_ID}"
+DNS_RECORD_NAME="${DNS_RECORD_NAME}"
+MAIN_IP="${MAIN_IP}"
+BACKUP_IP="${BACKUP_IP}"
+SPEED_THRESHOLD_MBPS="${SPEED_THRESHOLD_MBPS}"
+EOF
+
+    chmod 600 "$CONFIG_FILE"
+    echo "[SUCCESS] 配置已保存至 $CONFIG_FILE"
+}
+
+# HMAC-SHA256 签名工具函数
 sha256_hex() { printf "%s" "$1" | openssl dgst -sha256 | awk '{print $2}'; }
 hmac_sha256_hex() { printf "%s" "$2" | openssl dgst -sha256 -hmac "$1" | awk '{print $2}'; }
 
-# 华为云 DNS 修改 API
+# 5. 华为云 DNS API 更新实现
 update_huawei_dns() {
     TARGET_IP="$1"
     REASON="$2"
 
-    echo "[INFO] 开始切换 DNS，目标 IP: ${TARGET_IP} (原因: ${REASON})"
+    echo "[INFO] 准备更改 DNS 记录..."
+    echo "       目标 IP : ${TARGET_IP}"
+    echo "       触发原因: ${REASON}"
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
@@ -98,7 +144,7 @@ update_huawei_dns() {
 
     http_code=$(echo "$response" | grep "HTTP_STATUS:" | awk -F':' '{print $2}')
     if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
-        echo "[SUCCESS] 华为云 DNS 记录成功更新为 ${TARGET_IP}"
+        echo "[SUCCESS] 华为云 DNS 已成功指向: ${TARGET_IP}"
     else
         echo "[ERROR] DNS 记录更新失败，HTTP 状态码: $http_code"
         echo "$response" | sed '/HTTP_STATUS:/d'
@@ -106,10 +152,17 @@ update_huawei_dns() {
     fi
 }
 
-# 执行测速逻辑
+# 6. 测速并判断切换
 run_speedtest() {
+    check_config_env
     echo "========================================================="
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始网络带宽上限探测..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始探测网络带宽上限..."
+
+    NODES_1="https://mirrors.aliyun.com/ubuntu/ls-lR.gz"
+    NODES_2="https://mirrors.aliyun.com/debian/ls-lR.gz"
+    NODES_3="https://mirrors.aliyun.com/centos/8-stream/isos/x86_64/CHECKSUM"
+    NODES_4="https://mirrors.aliyun.com/epel/7/x86_64/Packages/a/a2ps-4.14-23.el7.x86_64.rpm"
+    DURATION=3
 
     TMP_DIR=$(mktemp -d)
 
@@ -123,42 +176,129 @@ run_speedtest() {
     TOTAL_BYTES=0
     for i in 1 2 3 4; do
         BYTES=$(cat "$TMP_DIR/thread_$i.txt" 2>/dev/null)
-        if [ -n "$BYTES" ]; then
-            TOTAL_BYTES=$((TOTAL_BYTES + BYTES))
-        fi
+        [ -n "$BYTES" ] && TOTAL_BYTES=$((TOTAL_BYTES + BYTES))
     done
     rm -rf "$TMP_DIR"
 
     if [ "$TOTAL_BYTES" -eq 0 ]; then
-        echo "[ERROR] 测速失败，未获取到流量数据！"
+        echo "[ERROR] 测速失败，未获取到网络流量数据！"
         exit 1
     fi
 
     SPEED_MBPS=$(awk "BEGIN {printf \"%.2f\", ($TOTAL_BYTES * 8) / $DURATION / 1000 / 1000}")
-    echo "[RESULT] 本次测得最高带宽: ${SPEED_MBPS} Mbps (阈值: ${SPEED_THRESHOLD_MBPS} Mbps)"
+    echo "[RESULT] 本次测得最高带宽: ${SPEED_MBPS} Mbps (判定阈值: ${SPEED_THRESHOLD_MBPS} Mbps)"
 
     IS_BELOW_THRESHOLD=$(awk "BEGIN {print ($SPEED_MBPS < $SPEED_THRESHOLD_MBPS) ? 1 : 0}")
 
     if [ "$IS_BELOW_THRESHOLD" -eq 1 ]; then
-        update_huawei_dns "$BACKUP_IP" "网速低于 ${SPEED_THRESHOLD_MBPS} Mbps"
+        update_huawei_dns "$BACKUP_IP" "网速处于限速状态 (${SPEED_MBPS} Mbps < ${SPEED_THRESHOLD_MBPS} Mbps)"
     else
         update_huawei_dns "$MAIN_IP" "网速正常 (${SPEED_MBPS} Mbps >= ${SPEED_THRESHOLD_MBPS} Mbps)"
     fi
 }
 
-# ----------------- 主程序入口 -----------------
+# 7. 安装 / 管理定时任务
+manage_cron() {
+    echo ""
+    echo "========================================================="
+    echo "                Crontab 定时任务管理"
+    echo "========================================================="
+    echo "1) 安装 / 替换定时任务"
+    echo "2) 卸载定时任务"
+    echo "0) 返回主菜单"
+    printf "请选择 [0-2]: "
+    read cron_choice
+
+    case "$cron_choice" in
+        1)
+            printf "请输入定时测速的间隔分钟数 (例如 5 表示每 5 分钟测速一次): "
+            read MINS
+            if ! echo "$MINS" | grep -qE '^[0-9]+$'; then
+                echo "[ERROR] 输入无效，请输入数字！"
+                return
+            fi
+
+            # 先清理可能存在的旧任务
+            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" > /tmp/cron_temp.txt
+            # 添加新任务
+            echo "*/$MINS * * * * /bin/sh $SCRIPT_PATH --cron >> $HOME/huawei_dns.log 2>&1" >> /tmp/cron_temp.txt
+            crontab /tmp/cron_temp.txt
+            rm -f /tmp/cron_temp.txt
+            echo "[SUCCESS] 已成功安装定时任务: 每 ${MINS} 分钟自动测试并切换一次！"
+            echo "          日志文件路径: $HOME/huawei_dns.log"
+            ;;
+        2)
+            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" > /tmp/cron_temp.txt
+            crontab /tmp/cron_temp.txt
+            rm -f /tmp/cron_temp.txt
+            echo "[SUCCESS] 已卸载本脚本的 Crontab 定时任务。"
+            ;;
+        *)
+            return
+            ;;
+    esac
+}
+
+# 8. 主菜单控制
+show_menu() {
+    load_config
+    while true; do
+        echo ""
+        echo "========================================================="
+        echo "       华为云 DNS 带宽上限自动/手动检测管理脚本"
+        echo "========================================================="
+        echo "  1. 立即执行网速测试并自动切换 DNS"
+        echo "  2. 手动强制切换为【主 IP】   (${MAIN_IP:-未配置})"
+        echo "  3. 手动强制切换为【备用 IP】 (${BACKUP_IP:-未配置})"
+        echo "  4. 设置 / 修改配置信息 (API 凭证、IP、阈值)"
+        echo "  5. 配置定时任务 (Crontab 自动运行)"
+        echo "  0. 退出程序"
+        echo "========================================================="
+        printf "请输入选项 [0-5]: "
+        read choice
+
+        case "$choice" in
+            1)
+                run_speedtest
+                ;;
+            2)
+                check_config_env
+                update_huawei_dns "$MAIN_IP" "用户通过菜单手动切换至主 IP"
+                ;;
+            3)
+                check_config_env
+                update_huawei_dns "$BACKUP_IP" "用户通过菜单手动切换至备用 IP"
+                ;;
+            4)
+                configure_settings
+                ;;
+            5)
+                manage_cron
+                ;;
+            0)
+                echo "再见！"
+                exit 0
+                ;;
+            *)
+                echo "[ERROR] 无效选项，请重新选择！"
+                ;;
+        esac
+    done
+}
+
+# ----------------- 脚本主入口 -----------------
 check_and_install_deps
 
-case "$1" in
-    --force-main)
-        echo "[MODE] 触发强制模式：直接切换至【主 IP】"
-        update_huawei_dns "$MAIN_IP" "命令行强制指定 --force-main"
-        ;;
-    --force-backup)
-        echo "[MODE] 触发强制模式：直接切换至【备用 IP】"
-        update_huawei_dns "$BACKUP_IP" "命令行强制指定 --force-backup"
-        ;;
-    *)
-        run_speedtest
-        ;;
-esac
+if [ "$1" = "--cron" ] || [ "$1" = "--auto" ]; then
+    # 后台/定时任务调用模式
+    run_speedtest
+elif [ "$1" = "--force-main" ]; then
+    check_config_env
+    update_huawei_dns "$MAIN_IP" "命令行强制指定 --force-main"
+elif [ "$1" = "--force-backup" ]; then
+    check_config_env
+    update_huawei_dns "$BACKUP_IP" "命令行强制指定 --force-backup"
+else
+    # 交互模式
+    show_menu
+fi
