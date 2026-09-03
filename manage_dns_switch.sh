@@ -55,7 +55,7 @@ check_config_env() {
     fi
 }
 
-# 4. 交互式设置与保存配置
+# 4. 交互式设置与保存配置 (已去除默认 Zone ID 和 RecordSet ID)
 configure_settings() {
     load_config
     echo ""
@@ -69,19 +69,19 @@ configure_settings() {
     printf "请输入 华为云 HUAWEI_SK [%s]: " "${HUAWEI_SK:-}"
     read input; [ -n "$input" ] && HUAWEI_SK="$input"
 
-    printf "请输入 HUAWEI_ZONE_ID [%s]: " "${HUAWEI_ZONE_ID:-ff8080829ffb1be501a064d68398469a}"
+    printf "请输入 HUAWEI_ZONE_ID [%s]: " "${HUAWEI_ZONE_ID:-}"
     read input; [ -n "$input" ] && HUAWEI_ZONE_ID="$input"
 
-    printf "请输入 HUAWEI_RECORDSET_ID [%s]: " "${HUAWEI_RECORDSET_ID:-ff8080829ffaffa101a064d826650b61}"
+    printf "请输入 HUAWEI_RECORDSET_ID [%s]: " "${HUAWEI_RECORDSET_ID:-}"
     read input; [ -n "$input" ] && HUAWEI_RECORDSET_ID="$input"
 
-    printf "请输入 域名解析记录名称 (如 example.com.) [%s]: " "${DNS_RECORD_NAME:-example.com.}"
+    printf "请输入 域名解析记录名称 (如 example.com.) [%s]: " "${DNS_RECORD_NAME:-}"
     read input; [ -n "$input" ] && DNS_RECORD_NAME="$input"
 
-    printf "请输入 主 IP 地址 (正常节点) [%s]: " "${MAIN_IP:-1.1.1.1}"
+    printf "请输入 主 IP 地址 (正常节点) [%s]: " "${MAIN_IP:-}"
     read input; [ -n "$input" ] && MAIN_IP="$input"
 
-    printf "请输入 备用 IP 地址 (降级节点) [%s]: " "${BACKUP_IP:-2.2.2.2}"
+    printf "请输入 备用 IP 地址 (降级节点) [%s]: " "${BACKUP_IP:-}"
     read input; [ -n "$input" ] && BACKUP_IP="$input"
 
     printf "请输入 限速判定的带宽阈值 Mbps [%s]: " "${SPEED_THRESHOLD_MBPS:-20}"
@@ -114,7 +114,7 @@ hmac_sha256_hex() {
     printf "%s" "$data" | openssl dgst -sha256 -hmac "$key" | awk '{print $2}'
 }
 
-# 5. 华为云 DNS API 更新实现 (已彻底修复 401 签名错误)
+# 5. 华为云 DNS API 更新实现
 update_huawei_dns() {
     TARGET_IP="$1"
     REASON="$2"
@@ -143,10 +143,10 @@ update_huawei_dns() {
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(sha256_hex "$body")
 
-    # 1. 构造 Canonical Headers (末尾必须包含 \n)
+    # 1. 构造 Canonical Headers
     canonical_headers="content-type:application/json\nhost:${endpoint}\nx-sdk-date:${x_sdk_date}\n"
 
-    # 2. 构造 Canonical Request (\n 严格对齐)
+    # 2. 构造 Canonical Request
     canonical_request=$(printf "%s\n%s\n\n%s\n%s\n%s" \
         "$method" \
         "$path" \
@@ -226,7 +226,7 @@ run_speedtest() {
     fi
 }
 
-# 7. 安装 / 卸载定时任务 (增强版)
+# 7. 安装 / 卸载定时任务
 manage_cron() {
     echo ""
     echo "========================================================="
@@ -248,13 +248,11 @@ manage_cron() {
                 return
             fi
 
-            # 清理包含本脚本路径的旧任务，然后追加新任务
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" ; echo "*/$MINS * * * * /bin/sh $SCRIPT_PATH --cron >> $HOME/huawei_dns.log 2>&1") | crontab -
             echo "[SUCCESS] 已成功安装定时任务: 每 ${MINS} 分钟自动测试并切换一次！"
             echo "          运行日志文件: $HOME/huawei_dns.log"
             ;;
         2)
-            # 安全删除包含本脚本路径的 crontab 规则
             crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
             echo "[SUCCESS] 已彻底移除本脚本的所有 Crontab 定时任务。"
             ;;
