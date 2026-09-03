@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # =========================================================
-# 华为云 DNS 自动/手动切换与测速管理脚本 (纯原生 POSIX Shell，无需 Python)
+# 华为云 DNS 自动/手动切换与测速管理脚本 (纯原生 POSIX Shell)
 # =========================================================
 
 CONFIG_FILE="$HOME/.huawei_dns_config.env"
@@ -87,7 +87,6 @@ configure_settings() {
     printf "请输入 限速判定的带宽阈值 Mbps [%s]: " "${SPEED_THRESHOLD_MBPS:-20}"
     read input; [ -n "$input" ] && SPEED_THRESHOLD_MBPS="$input"
 
-    # 清除输入的隐藏回车符并保存文件
     cat <<EOF > "$CONFIG_FILE"
 HUAWEI_AK="$(printf "%s" "$HUAWEI_AK" | tr -d '\r')"
 HUAWEI_SK="$(printf "%s" "$HUAWEI_SK" | tr -d '\r')"
@@ -103,18 +102,7 @@ EOF
     echo "[SUCCESS] 配置已保存至 $CONFIG_FILE"
 }
 
-# 工具函数：计算 SHA256 / HMAC-SHA256
-sha256_hex() {
-    printf "%s" "$1" | openssl dgst -sha256 | awk '{print $2}'
-}
-
-hmac_sha256_hex() {
-    local key="$1"
-    local data="$2"
-    printf "%s" "$data" | openssl dgst -sha256 -hmac "$key" | awk '{print $2}'
-}
-
-# 5. 华为云 DNS API 更新实现 (纯 Shell 完美换行签名)
+# 5. 华为云 DNS API 更新实现 (终极 401 修复版)
 update_huawei_dns() {
     TARGET_IP="$1"
     REASON="$2"
@@ -123,7 +111,7 @@ update_huawei_dns() {
     echo "       目标 IP : ${TARGET_IP}"
     echo "       触发原因: ${REASON}"
 
-    # 1. 彻底清理参数中的 \r 回车符和末尾空格
+    # 清理参数中的 \r 回车符
     HUAWEI_AK=$(printf "%s" "$HUAWEI_AK" | tr -d '\r')
     HUAWEI_SK=$(printf "%s" "$HUAWEI_SK" | tr -d '\r')
     HUAWEI_ZONE_ID=$(printf "%s" "$HUAWEI_ZONE_ID" | tr -d '\r')
@@ -133,7 +121,6 @@ update_huawei_dns() {
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
-    # 保证路径末尾没有斜杠 /
     path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}"
     url="https://${endpoint}${path}"
 
@@ -141,22 +128,19 @@ update_huawei_dns() {
     x_sdk_date=$(date -u +"%Y%m%dT%H%M%SZ")
 
     signed_headers="content-type;host;x-sdk-date"
-    body_hash=$(sha256_hex "$body")
+    body_hash=$(printf "%s" "$body" | openssl dgst -sha256 | awk '{print $2}')
 
-    # 2. 使用 awk 拼接规范字符串，确保 \n 换行符 100% 正确输出
-    canonical_headers=$(awk -v ep="$endpoint" -v dt="$x_sdk_date" \
-        'BEGIN { printf "content-type:application/json\nhost:%s\nx-sdk-date:%s\n", ep, dt }')
+    # 1. 构造 Canonical Request (用 printf '\n' 绝对保障换行符存在)
+    canonical_req_str=$(printf "PUT\n%s\n\ncontent-type:application/json\nhost:%s\nx-sdk-date:%s\n\n%s\n%s" \
+        "$path" "$endpoint" "$x_sdk_date" "$signed_headers" "$body_hash")
 
-    canonical_request=$(awk -v m="$method" -v p="$path" -v ch="$canonical_headers" -v sh="$signed_headers" -v bh="$body_hash" \
-        'BEGIN { printf "%s\n%s\n\n%s\n%s\n%s", m, p, ch, sh, bh }')
+    canonical_hash=$(printf "%s" "$canonical_req_str" | openssl dgst -sha256 | awk '{print $2}')
 
-    canonical_hash=$(sha256_hex "$canonical_request")
+    # 2. 构造 StringToSign
+    string_to_sign=$(printf "SDK-HMAC-SHA256\n%s\n%s" "$x_sdk_date" "$canonical_hash")
 
-    string_to_sign=$(awk -v dt="$x_sdk_date" -v ch="$canonical_hash" \
-        'BEGIN { printf "SDK-HMAC-SHA256\n%s\n%s", dt, ch }')
-
-    # 3. 计算 HMAC-SHA256 签名
-    signature=$(hmac_sha256_hex "$HUAWEI_SK" "$string_to_sign")
+    # 3. 计算签名
+    signature=$(printf "%s" "$string_to_sign" | openssl dgst -sha256 -hmac "$HUAWEI_SK" | awk '{print $2}')
     authorization="SDK-HMAC-SHA256 Access=${HUAWEI_AK}, SignedHeaders=${signed_headers}, Signature=${signature}"
 
     # 4. 发起 API 请求
