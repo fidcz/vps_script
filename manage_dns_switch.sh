@@ -133,8 +133,8 @@ update_huawei_dns() {
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
-    # 华为云 API 网关要求的规范 Path 末尾带 /
-    path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}/"
+    # 修正：去掉了 Path 末尾多余的斜杠
+    path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}"
     url="https://${endpoint}${path}"
 
     body="{\"name\":\"${DNS_RECORD_NAME}\",\"type\":\"A\",\"records\":[\"${TARGET_IP}\"]}"
@@ -143,10 +143,10 @@ update_huawei_dns() {
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(sha256_hex "$body")
 
-    # 1. 构造 Canonical Headers
+    # 1. 构造 Canonical Headers (每行必须以 \n 结尾)
     canonical_headers="content-type:application/json\nhost:${endpoint}\nx-sdk-date:${x_sdk_date}\n"
 
-    # 2. 构造 Canonical Request
+    # 2. 构造 Canonical Request (严格对齐华为云 SDK 规范: HTTPMethod\nCanonicalURI\nCanonicalQueryString\nCanonicalHeaders\nSignedHeaders\nSHA256Payload)
     canonical_request=$(printf "%s\n%s\n\n%s\n%s\n%s" \
         "$method" \
         "$path" \
