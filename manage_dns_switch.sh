@@ -160,9 +160,11 @@ update_huawei_dns() {
     http_code=$(echo "$response" | grep "HTTP_STATUS:" | awk -F':' '{print $2}')
     if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
         echo "[SUCCESS] 华为云 DNS 已成功指向: ${TARGET_IP}"
+        record_run_status "SUCCESS" "DNS 已切换至 ${TARGET_IP}；原因：${REASON}"
     else
         echo "[ERROR] DNS 记录更新失败，HTTP 状态码: $http_code"
         echo "$response" | sed '/HTTP_STATUS:/d'
+        record_run_status "FAILED" "DNS 更新失败，HTTP ${http_code}；原因：${REASON}"
         exit 1
     fi
 }
@@ -197,6 +199,7 @@ run_speedtest() {
 
     if [ "$TOTAL_BYTES" -eq 0 ]; then
         echo "[ERROR] 测速失败，未获取到网络流量数据！"
+        record_run_status "FAILED" "测速失败，未获取到网络流量数据"
         exit 1
     fi
 
@@ -248,7 +251,67 @@ manage_cron() {
     esac
 }
 
-# 8. 主菜单控制系统
+# 8. 状态信息显示
+STATUS_FILE="$HOME/.huawei_dns_last_status"
+
+record_run_status() {
+    status="$1"
+    detail="$2"
+    {
+        printf 'TIME=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf 'STATUS=%s\n' "$status"
+        printf 'DETAIL=%s\n' "$detail"
+    } > "$STATUS_FILE"
+    chmod 600 "$STATUS_FILE" 2>/dev/null || true
+}
+
+get_cron_status() {
+    cron_line=$(crontab -l 2>/dev/null | grep -F "$SCRIPT_PATH" | grep -v '^[[:space:]]*#' | head -n 1)
+    if [ -n "$cron_line" ]; then
+        cron_expr=$(printf '%s\n' "$cron_line" | awk '{print $1" "$2" "$3" "$4" "$5}')
+        case "$cron_expr" in
+            "*/1 * * * *") cron_interval="每 1 分钟" ;;
+            "*/5 * * * *") cron_interval="每 5 分钟" ;;
+            "*/10 * * * *") cron_interval="每 10 分钟" ;;
+            "*/15 * * * *") cron_interval="每 15 分钟" ;;
+            "*/30 * * * *") cron_interval="每 30 分钟" ;;
+            "0 * * * *") cron_interval="每 1 小时" ;;
+            *) cron_interval="Cron: ${cron_expr}" ;;
+        esac
+        printf '%s|%s\n' "已启用" "$cron_interval"
+    else
+        printf '%s|%s\n' "未启用" "-"
+    fi
+}
+
+show_status() {
+    echo ""
+    echo "---------------- 当前运行状态 ----------------"
+    cron_info=$(get_cron_status)
+    cron_enabled=$(printf '%s' "$cron_info" | cut -d'|' -f1)
+    cron_interval=$(printf '%s' "$cron_info" | cut -d'|' -f2)
+    printf "  当前 Cron 状态 : %s\n" "$cron_enabled"
+    printf "  运行间隔        : %s\n" "$cron_interval"
+
+    if [ -f "$STATUS_FILE" ]; then
+        last_time=$(awk -F= '$1=="TIME"{print substr($0,6)}' "$STATUS_FILE")
+        last_status=$(awk -F= '$1=="STATUS"{print $2}' "$STATUS_FILE")
+        last_detail=$(awk -F= '$1=="DETAIL"{print substr($0,8)}' "$STATUS_FILE")
+        printf "  上次运行时间    : %s\n" "${last_time:-未知}"
+        case "$last_status" in
+            SUCCESS) printf "  上次运行结果    : 成功\n" ;;
+            FAILED)  printf "  上次运行结果    : 失败\n" ;;
+            *)        printf "  上次运行结果    : %s\n" "${last_status:-未知}" ;;
+        esac
+        [ -n "$last_detail" ] && printf "  结果详情        : %s\n" "$last_detail"
+    else
+        printf "  上次运行时间    : 暂无记录\n"
+        printf "  上次运行结果    : 暂无记录\n"
+    fi
+    echo "----------------------------------------------"
+}
+
+# 9. 主菜单控制系统
 show_menu() {
     load_config
     while true; do
@@ -256,6 +319,7 @@ show_menu() {
         echo "========================================================="
         echo "       华为云 DNS 带宽上限自动/手动检测管理脚本"
         echo "========================================================="
+        show_status
         echo "  1. 立即执行网速测试并自动切换 DNS"
         echo "  2. 手动强制切换为【主 IP】   (${MAIN_IP:-未配置})"
         echo "  3. 手动强制切换为【备用 IP】 (${BACKUP_IP:-未配置})"
