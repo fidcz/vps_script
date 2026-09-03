@@ -26,3 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/fidcz/vps_script/refs/heads/main/sp
 立即测试运行：./speed_brush.sh run   
 查看实时运行日志：tail -f /tmp/speed_brush.log   
 一键卸载定时任务：./speed_brush.sh uninstall   
+
+## manage_dns_switch.sh  
+> 自动切换主从dns ip   
+```
+curl -fsSL https://raw.githubusercontent.com/fidcz/vps_script/main/manage_dns_switch.sh -o manage_dns_switch.sh && chmod +x manage_dns_switch.sh && ./manage_dns_switch.sh
+```
+或  
+```
+wget -qO manage_dns_switch.sh https://raw.githubusercontent.com/fidcz/vps_script/main/manage_dns_switch.sh && chmod +x manage_dns_switch.sh && ./manage_dns_switch.sh
+```
