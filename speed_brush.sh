@@ -123,10 +123,10 @@ is_in_time_window() {
     fi
 }
 
-# 生成 80KB/s ~ 100KB/s 之间的随机字节数
+# 生成 40KB/s ~ 60KB/s 之间的随机字节数
 get_random_rate() {
     RAND_OFFSET=$((RANDOM % 20481))
-    RATE=$((102400 + RAND_OFFSET))
+    RATE=$((61440 + RAND_OFFSET))
     echo "$RATE"
 }
 
