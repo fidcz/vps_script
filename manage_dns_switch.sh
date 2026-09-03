@@ -47,6 +47,8 @@ load_config() {
 # 3. 校验必要配置是否存在
 check_config_env() {
     load_config
+    [ -z "$CRON_UTC8_HOUR_RANGE" ] && CRON_UTC8_HOUR_RANGE="00-23"
+    [ -z "$CRON_INTERVAL_MINUTES" ] && CRON_INTERVAL_MINUTES="5"
     if [ -z "$HUAWEI_AK" ] || [ -z "$HUAWEI_SK" ] || [ -z "$HUAWEI_ZONE_ID" ] || \
        [ -z "$HUAWEI_RECORDSET_ID" ] || [ -z "$DNS_RECORD_NAME" ] || \
        [ -z "$MAIN_IP" ] || [ -z "$BACKUP_IP" ] || [ -z "$SPEED_THRESHOLD_MBPS" ]; then
@@ -87,6 +89,16 @@ configure_settings() {
     printf "请输入 限速判定的带宽阈值 Mbps [%s]: " "${SPEED_THRESHOLD_MBPS:-20}"
     read input; [ -n "$input" ] && SPEED_THRESHOLD_MBPS="$input"
 
+    printf "请输入 Cron 在 UTC+8 允许运行的小时范围 [%s] (例如 08-22，跨午夜可用 22-02): " "${CRON_UTC8_HOUR_RANGE:-00-23}"
+    read input
+    if [ -n "$input" ]; then
+        if printf '%s' "$input" | grep -qE '^([01][0-9]|2[0-3])-([01][0-9]|2[0-3])$'; then
+            CRON_UTC8_HOUR_RANGE="$input"
+        else
+            echo "[ERROR] 时间范围格式无效，请使用 HH-HH，例如 08-22；保留原设置。"
+        fi
+    fi
+
     cat <<EOF > "$CONFIG_FILE"
 HUAWEI_AK="$(printf "%s" "$HUAWEI_AK" | tr -d '\r')"
 HUAWEI_SK="$(printf "%s" "$HUAWEI_SK" | tr -d '\r')"
@@ -96,6 +108,8 @@ DNS_RECORD_NAME="$(printf "%s" "$DNS_RECORD_NAME" | tr -d '\r')"
 MAIN_IP="$(printf "%s" "$MAIN_IP" | tr -d '\r')"
 BACKUP_IP="$(printf "%s" "$BACKUP_IP" | tr -d '\r')"
 SPEED_THRESHOLD_MBPS="$(printf "%s" "$SPEED_THRESHOLD_MBPS" | tr -d '\r')"
+CRON_UTC8_HOUR_RANGE="$(printf "%s" "${CRON_UTC8_HOUR_RANGE:-00-23}" | tr -d '\r')"
+CRON_INTERVAL_MINUTES="$(printf "%s" "${CRON_INTERVAL_MINUTES:-5}" | tr -d '\r')"
 EOF
 
     chmod 600 "$CONFIG_FILE"
@@ -230,19 +244,60 @@ manage_cron() {
 
     case "$cron_choice" in
         1)
-            printf "请输入定时测速的间隔分钟数 (如 5 表示每 5 分钟测速一次): "
+            printf "请输入定时测速的间隔分钟数 (如 5 表示每 5 分钟测速一次) [%s]: " "${CRON_INTERVAL_MINUTES:-5}"
             read MINS
-            if ! echo "$MINS" | grep -qE '^[0-9]+$'; then
-                echo "[ERROR] 输入无效，请输入数字！"
+            [ -z "$MINS" ] && MINS="${CRON_INTERVAL_MINUTES:-5}"
+            if ! echo "$MINS" | grep -qE '^[0-9]+$' || [ "$MINS" -lt 1 ] || [ "$MINS" -gt 59 ]; then
+                echo "[ERROR] 输入无效，请输入 1-59 的分钟数！"
                 return
             fi
 
-            (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" ; echo "*/$MINS * * * * /bin/sh $SCRIPT_PATH --cron >> $HOME/huawei_dns.log 2>&1") | crontab -
-            echo "[SUCCESS] 已成功安装定时任务: 每 ${MINS} 分钟自动测试并切换一次！"
-            echo "          运行日志文件: $HOME/huawei_dns.log"
+            printf "请输入 UTC+8 允许运行的小时范围 (00-23) [%s]: " "${CRON_UTC8_HOUR_RANGE:-00-23}"
+            read HOUR_RANGE
+            [ -z "$HOUR_RANGE" ] && HOUR_RANGE="${CRON_UTC8_HOUR_RANGE:-00-23}"
+
+            if ! printf '%s' "$HOUR_RANGE" | grep -qE '^([01][0-9]|2[0-3])-([01][0-9]|2[0-3])$'; then
+                echo "[ERROR] 时间范围格式无效，请使用 HH-HH，例如 08-22 或 22-02。"
+                return
+            fi
+
+            START_HOUR=$(printf '%s' "$HOUR_RANGE" | cut -d'-' -f1)
+            END_HOUR=$(printf '%s' "$HOUR_RANGE" | cut -d'-' -f2)
+
+            # 使用 Debian cron 的 CRON_TZ，让“小时范围”严格按 UTC+8(Asia/Shanghai)解释。
+            # 非跨午夜：一条规则；跨午夜：拆成两条规则。
+            if [ "$START_HOUR" -le "$END_HOUR" ]; then
+                CRON_HOURS="${START_HOUR#0}-${END_HOUR#0}"
+                CRON_LINES="CRON_TZ=Asia/Shanghai
+*/${MINS} ${CRON_HOURS} * * * /bin/sh ${SCRIPT_PATH} --cron >> ${HOME}/huawei_dns.log 2>&1"
+            else
+                CRON_LINES="CRON_TZ=Asia/Shanghai
+*/${MINS} ${START_HOUR#0}-23 * * * /bin/sh ${SCRIPT_PATH} --cron >> ${HOME}/huawei_dns.log 2>&1
+*/${MINS} 0-${END_HOUR#0} * * * /bin/sh ${SCRIPT_PATH} --cron >> ${HOME}/huawei_dns.log 2>&1"
+            fi
+
+            # 删除旧任务后写入新任务，同时保存配置。
+            (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | grep -v '^CRON_TZ=Asia/Shanghai$'
+             printf '%s\n' "$CRON_LINES") | crontab -
+
+            CRON_UTC8_HOUR_RANGE="$HOUR_RANGE"
+            CRON_INTERVAL_MINUTES="$MINS"
+            {
+                grep -v '^CRON_UTC8_HOUR_RANGE=' "$CONFIG_FILE" 2>/dev/null | grep -v '^CRON_INTERVAL_MINUTES='
+                printf 'CRON_UTC8_HOUR_RANGE="%s"\n' "$CRON_UTC8_HOUR_RANGE"
+                printf 'CRON_INTERVAL_MINUTES="%s"\n' "$CRON_INTERVAL_MINUTES"
+            } > "${CONFIG_FILE}.tmp"
+            mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+            chmod 600 "$CONFIG_FILE"
+
+            echo "[SUCCESS] 已成功安装定时任务。"
+            echo "          执行间隔       : 每 ${MINS} 分钟"
+            echo "          UTC+8 运行时段 : ${START_HOUR}:00 - ${END_HOUR}:59"
+            echo "          Cron 时区      : Asia/Shanghai (UTC+8)"
+            echo "          运行日志       : $HOME/huawei_dns.log"
             ;;
         2)
-            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
+            crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | grep -v '^CRON_TZ=Asia/Shanghai$' | crontab -
             echo "[SUCCESS] 已彻底移除本脚本的所有 Crontab 定时任务。"
             ;;
         *)
@@ -268,20 +323,100 @@ record_run_status() {
 get_cron_status() {
     cron_line=$(crontab -l 2>/dev/null | grep -F "$SCRIPT_PATH" | grep -v '^[[:space:]]*#' | head -n 1)
     if [ -n "$cron_line" ]; then
-        cron_expr=$(printf '%s\n' "$cron_line" | awk '{print $1" "$2" "$3" "$4" "$5}')
-        case "$cron_expr" in
-            "*/1 * * * *") cron_interval="每 1 分钟" ;;
-            "*/5 * * * *") cron_interval="每 5 分钟" ;;
-            "*/10 * * * *") cron_interval="每 10 分钟" ;;
-            "*/15 * * * *") cron_interval="每 15 分钟" ;;
-            "*/30 * * * *") cron_interval="每 30 分钟" ;;
-            "0 * * * *") cron_interval="每 1 小时" ;;
-            *) cron_interval="Cron: ${cron_expr}" ;;
+        interval="${CRON_INTERVAL_MINUTES:-}"
+        [ -z "$interval" ] && interval=$(printf '%s\n' "$cron_line" | awk '{print $1}' | sed 's/^\*\///')
+        case "$interval" in
+            ''|*[!0-9]*) cron_interval="已配置" ;;
+            1) cron_interval="每 1 分钟" ;;
+            *) cron_interval="每 ${interval} 分钟" ;;
         esac
         printf '%s|%s\n' "已启用" "$cron_interval"
     else
         printf '%s|%s\n' "未启用" "-"
     fi
+}
+
+get_next_cron_run() {
+    interval="${CRON_INTERVAL_MINUTES:-5}"
+    range="${CRON_UTC8_HOUR_RANGE:-00-23}"
+
+    case "$interval" in
+        ''|*[!0-9]*) interval=5 ;;
+    esac
+    [ "$interval" -lt 1 ] && interval=5
+    [ "$interval" -gt 59 ] && interval=59
+
+    start_hour=$(printf '%s' "$range" | cut -d'-' -f1)
+    end_hour=$(printf '%s' "$range" | cut -d'-' -f2)
+    start_hour=$((10#$start_hour))
+    end_hour=$((10#$end_hour))
+
+    now_hour=$(TZ=Asia/Shanghai date '+%H')
+    now_minute=$(TZ=Asia/Shanghai date '+%M')
+    now_hour=$((10#$now_hour))
+    now_minute=$((10#$now_minute))
+
+    # 计算从当前分钟开始，下一次 */N 的分钟点。
+    next_minute=$(( ((now_minute / interval) + 1) * interval ))
+
+    if [ "$start_hour" -le "$end_hour" ]; then
+        if [ "$now_hour" -lt "$start_hour" ]; then
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+        elif [ "$now_hour" -gt "$end_hour" ]; then
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+        elif [ "$next_minute" -lt 60 ]; then
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:00:00') +${next_minute} minutes" +%s)
+            candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
+            candidate_hour=$((10#$candidate_hour))
+            if [ "$candidate_hour" -gt "$end_hour" ]; then
+                next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+            fi
+        else
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 hour' '+%Y-%m-%d %H:00:00')" +%s)
+            candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
+            candidate_hour=$((10#$candidate_hour))
+            if [ "$candidate_hour" -gt "$end_hour" ]; then
+                next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+            fi
+        fi
+    else
+        # 跨午夜，例如 22-02。
+        in_range=0
+        if [ "$now_hour" -ge "$start_hour" ] || [ "$now_hour" -le "$end_hour" ]; then
+            in_range=1
+        fi
+
+        if [ "$in_range" -eq 0 ]; then
+            # 当前在 03-21，下一次从今天 22:00 开始。
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+            if [ "$next_epoch" -le "$(date +%s)" ]; then
+                next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+            fi
+        elif [ "$next_minute" -lt 60 ]; then
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:00:00') +${next_minute} minutes" +%s)
+            candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
+            candidate_hour=$((10#$candidate_hour))
+            if ! { [ "$candidate_hour" -ge "$start_hour" ] || [ "$candidate_hour" -le "$end_hour" ]; }; then
+                next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+                if [ "$next_epoch" -le "$(date +%s)" ]; then
+                    next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+                fi
+            fi
+        else
+            # 当前小时的下一小时 00 分。
+            next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 hour' '+%Y-%m-%d %H:00:00')" +%s)
+            candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
+            candidate_hour=$((10#$candidate_hour))
+            if ! { [ "$candidate_hour" -ge "$start_hour" ] || [ "$candidate_hour" -le "$end_hour" ]; }; then
+                next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+                if [ "$next_epoch" -le "$(date +%s)" ]; then
+                    next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
+                fi
+            fi
+        fi
+    fi
+
+    TZ=Asia/Shanghai date -d "@$next_epoch" '+%Y-%m-%d %H:%M:%S (UTC+8)'
 }
 
 show_status() {
@@ -292,6 +427,15 @@ show_status() {
     cron_interval=$(printf '%s' "$cron_info" | cut -d'|' -f2)
     printf "  当前 Cron 状态 : %s\n" "$cron_enabled"
     printf "  运行间隔        : %s\n" "$cron_interval"
+    printf "  UTC+8 运行时段   : %s:00 - %s:59\n" \
+        "$(printf '%s' "${CRON_UTC8_HOUR_RANGE:-00-23}" | cut -d'-' -f1)" \
+        "$(printf '%s' "${CRON_UTC8_HOUR_RANGE:-00-23}" | cut -d'-' -f2)"
+
+    if [ "$cron_enabled" = "已启用" ]; then
+        printf "  预计下次运行    : %s\n" "$(get_next_cron_run)"
+    else
+        printf "  预计下次运行    : -\n"
+    fi
 
     if [ -f "$STATUS_FILE" ]; then
         last_time=$(awk -F= '$1=="TIME"{print substr($0,6)}' "$STATUS_FILE")
