@@ -336,6 +336,13 @@ get_cron_status() {
     fi
 }
 
+to_decimal() {
+    value="$1"
+    value=$(printf '%s' "$value" | sed 's/^0*//')
+    [ -z "$value" ] && value=0
+    printf '%s' "$value"
+}
+
 get_next_cron_run() {
     interval="${CRON_INTERVAL_MINUTES:-5}"
     range="${CRON_UTC8_HOUR_RANGE:-00-23}"
@@ -348,13 +355,13 @@ get_next_cron_run() {
 
     start_hour=$(printf '%s' "$range" | cut -d'-' -f1)
     end_hour=$(printf '%s' "$range" | cut -d'-' -f2)
-    start_hour=$((10#$start_hour))
-    end_hour=$((10#$end_hour))
+    start_hour=$(to_decimal "$start_hour")
+    end_hour=$(to_decimal "$end_hour")
 
     now_hour=$(TZ=Asia/Shanghai date '+%H')
     now_minute=$(TZ=Asia/Shanghai date '+%M')
-    now_hour=$((10#$now_hour))
-    now_minute=$((10#$now_minute))
+    now_hour=$(to_decimal "$now_hour")
+    now_minute=$(to_decimal "$now_minute")
 
     # 计算从当前分钟开始，下一次 */N 的分钟点。
     next_minute=$(( ((now_minute / interval) + 1) * interval ))
@@ -367,14 +374,14 @@ get_next_cron_run() {
         elif [ "$next_minute" -lt 60 ]; then
             next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:00:00') +${next_minute} minutes" +%s)
             candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
-            candidate_hour=$((10#$candidate_hour))
+            candidate_hour=$(to_decimal "$candidate_hour")
             if [ "$candidate_hour" -gt "$end_hour" ]; then
                 next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
             fi
         else
             next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 hour' '+%Y-%m-%d %H:00:00')" +%s)
             candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
-            candidate_hour=$((10#$candidate_hour))
+            candidate_hour=$(to_decimal "$candidate_hour")
             if [ "$candidate_hour" -gt "$end_hour" ]; then
                 next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 day' '+%Y-%m-%d') ${start_hour}:00:00" +%s)
             fi
@@ -395,7 +402,7 @@ get_next_cron_run() {
         elif [ "$next_minute" -lt 60 ]; then
             next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:00:00') +${next_minute} minutes" +%s)
             candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
-            candidate_hour=$((10#$candidate_hour))
+            candidate_hour=$(to_decimal "$candidate_hour")
             if ! { [ "$candidate_hour" -ge "$start_hour" ] || [ "$candidate_hour" -le "$end_hour" ]; }; then
                 next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d') ${start_hour}:00:00" +%s)
                 if [ "$next_epoch" -le "$(date +%s)" ]; then
@@ -406,7 +413,7 @@ get_next_cron_run() {
             # 当前小时的下一小时 00 分。
             next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date -d '+1 hour' '+%Y-%m-%d %H:00:00')" +%s)
             candidate_hour=$(TZ=Asia/Shanghai date -d "@$next_epoch" '+%H')
-            candidate_hour=$((10#$candidate_hour))
+            candidate_hour=$(to_decimal "$candidate_hour")
             if ! { [ "$candidate_hour" -ge "$start_hour" ] || [ "$candidate_hour" -le "$end_hour" ]; }; then
                 next_epoch=$(TZ=Asia/Shanghai date -d "$(TZ=Asia/Shanghai date '+%Y-%m-%d') ${start_hour}:00:00" +%s)
                 if [ "$next_epoch" -le "$(date +%s)" ]; then
