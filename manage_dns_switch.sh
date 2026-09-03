@@ -104,8 +104,14 @@ EOF
 }
 
 # HMAC-SHA256 签名工具函数
-sha256_hex() { printf "%s" "$1" | openssl dgst -sha256 | awk '{print $2}'; }
-hmac_sha256_hex() { printf "%s" "$2" | openssl dgst -sha256 -hmac "$1" | awk '{print $2}'; }
+sha256_hex() {
+    printf "%s" "$1" | openssl dgst -sha256 | awk '{print $2}'
+}
+hmac_sha256_hex() {
+    local key="$1"
+    local data="$2"
+    printf "%s" "$data" | openssl dgst -sha256 -hmac "$key" | awk '{print $2}'
+}
 
 # 5. 华为云 DNS API 更新实现
 update_huawei_dns() {
@@ -116,9 +122,18 @@ update_huawei_dns() {
     echo "       目标 IP : ${TARGET_IP}"
     echo "       触发原因: ${REASON}"
 
+    # 清理变量可能夹带的 \r 回车符
+    HUAWEI_AK=$(printf "%s" "$HUAWEI_AK" | tr -d '\r')
+    HUAWEI_SK=$(printf "%s" "$HUAWEI_SK" | tr -d '\r')
+    HUAWEI_ZONE_ID=$(printf "%s" "$HUAWEI_ZONE_ID" | tr -d '\r')
+    HUAWEI_RECORDSET_ID=$(printf "%s" "$HUAWEI_RECORDSET_ID" | tr -d '\r')
+    DNS_RECORD_NAME=$(printf "%s" "$DNS_RECORD_NAME" | tr -d '\r')
+    TARGET_IP=$(printf "%s" "$TARGET_IP" | tr -d '\r')
+
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
-    path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}"
+    # 华为云 API 网关标准的 Path 末尾带 /
+    path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}/"
     url="https://${endpoint}${path}"
 
     body="{\"name\":\"${DNS_RECORD_NAME}\",\"type\":\"A\",\"records\":[\"${TARGET_IP}\"]}"
@@ -127,30 +142,27 @@ update_huawei_dns() {
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(sha256_hex "$body")
 
-    # 修正 1：使用 true line breaks (真正的换行) 拼接 Canonical Headers
-    canonical_headers="content-type:application/json
-host:${endpoint}
-x-sdk-date:${x_sdk_date}
-"
+    # 1. 构建 Canonical Headers (\n 结尾)
+    canonical_headers="content-type:application/json\nhost:${endpoint}\nx-sdk-date:${x_sdk_date}\n"
 
-    # 修正 2：去除 path 后的斜杠，使用 true line breaks 拼接 Canonical Request
-    canonical_request="${method}
-${path}
-
-${canonical_headers}
-${signed_headers}
-${body_hash}"
+    # 2. 构建 Canonical Request (严格用 \n 分隔各个字段)
+    canonical_request=$(printf "%s\n%s\n\n%s\n%s\n%s" \
+        "$method" \
+        "$path" \
+        "$canonical_headers" \
+        "$signed_headers" \
+        "$body_hash")
 
     canonical_hash=$(sha256_hex "$canonical_request")
 
-    # 修正 3：使用 true line breaks 拼接 StringToSign
-    string_to_sign="SDK-HMAC-SHA256
-${x_sdk_date}
-${canonical_hash}"
+    # 3. 构建 StringToSign
+    string_to_sign=$(printf "SDK-HMAC-SHA256\n%s\n%s" "$x_sdk_date" "$canonical_hash")
 
+    # 4. 计算 Signature
     signature=$(hmac_sha256_hex "$HUAWEI_SK" "$string_to_sign")
     authorization="SDK-HMAC-SHA256 Access=${HUAWEI_AK}, SignedHeaders=${signed_headers}, Signature=${signature}"
 
+    # 5. 发送请求
     response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT "$url" \
         -H "Content-Type: application/json" \
         -H "Host: ${endpoint}" \
