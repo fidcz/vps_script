@@ -12,8 +12,8 @@ BACKUP_IP="2.2.2.2"             # 备用 IP (网速受限/低于20Mbps时使用)
 # 华为云 API 参数
 HUAWEI_AK="你的HUAWEI_AK"
 HUAWEI_SK="你的HUAWEI_SK"
-HUAWEI_ZONE_ID="ff8080829ffb1be501a064d68398469a"
-HUAWEI_RECORDSET_ID="ff8080829ffaffa101a064d826650b61"
+HUAWEI_ZONE_ID="xxx"
+HUAWEI_RECORDSET_ID="xxx"
 DNS_RECORD_NAME="example.com."  # 域名记录名称 (注意末尾保留半角点号)
 
 # 测速节点池 (阿里云镜像站)
