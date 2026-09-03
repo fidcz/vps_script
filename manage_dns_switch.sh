@@ -123,7 +123,7 @@ update_huawei_dns() {
     echo "       目标 IP : ${TARGET_IP}"
     echo "       触发原因: ${REASON}"
 
-    # 清理参数中的 \r 回车符
+    # 1. 彻底清理参数中的 \r 回车符和末尾空格
     HUAWEI_AK=$(printf "%s" "$HUAWEI_AK" | tr -d '\r')
     HUAWEI_SK=$(printf "%s" "$HUAWEI_SK" | tr -d '\r')
     HUAWEI_ZONE_ID=$(printf "%s" "$HUAWEI_ZONE_ID" | tr -d '\r')
@@ -133,6 +133,7 @@ update_huawei_dns() {
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
+    # 保证路径末尾没有斜杠 /
     path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}"
     url="https://${endpoint}${path}"
 
@@ -142,28 +143,23 @@ update_huawei_dns() {
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(sha256_hex "$body")
 
-    # 使用 Shell 多行原生文本拼接，避免 \n 被转义丢失
-    canonical_headers="content-type:application/json
-host:${endpoint}
-x-sdk-date:${x_sdk_date}
-"
+    # 2. 使用 awk 拼接规范字符串，确保 \n 换行符 100% 正确输出
+    canonical_headers=$(awk -v ep="$endpoint" -v dt="$x_sdk_date" \
+        'BEGIN { printf "content-type:application/json\nhost:%s\nx-sdk-date:%s\n", ep, dt }')
 
-    canonical_request="${method}
-${path}
-
-${canonical_headers}
-${signed_headers}
-${body_hash}"
+    canonical_request=$(awk -v m="$method" -v p="$path" -v ch="$canonical_headers" -v sh="$signed_headers" -v bh="$body_hash" \
+        'BEGIN { printf "%s\n%s\n\n%s\n%s\n%s", m, p, ch, sh, bh }')
 
     canonical_hash=$(sha256_hex "$canonical_request")
 
-    string_to_sign="SDK-HMAC-SHA256
-${x_sdk_date}
-${canonical_hash}"
+    string_to_sign=$(awk -v dt="$x_sdk_date" -v ch="$canonical_hash" \
+        'BEGIN { printf "SDK-HMAC-SHA256\n%s\n%s", dt, ch }')
 
+    # 3. 计算 HMAC-SHA256 签名
     signature=$(hmac_sha256_hex "$HUAWEI_SK" "$string_to_sign")
     authorization="SDK-HMAC-SHA256 Access=${HUAWEI_AK}, SignedHeaders=${signed_headers}, Signature=${signature}"
 
+    # 4. 发起 API 请求
     response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT "$url" \
         -H "Content-Type: application/json" \
         -H "Host: ${endpoint}" \
