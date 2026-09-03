@@ -121,7 +121,12 @@ update_huawei_dns() {
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
+
+    # 实际 HTTP 请求 URI 按华为云 API 文档使用无尾斜杠路径；
+    # 但 DNS API Gateway 在签名校验时会将该资源路径规范化为带尾斜杠。
+    # 因此：请求 URL 使用 path，Canonical Request 使用 canonical_uri。
     path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}"
+    canonical_uri="${path}/"
     url="https://${endpoint}${path}"
 
     body="{\"name\":\"${DNS_RECORD_NAME}\",\"type\":\"A\",\"records\":[\"${TARGET_IP}\"]}"
@@ -130,9 +135,10 @@ update_huawei_dns() {
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(printf "%s" "$body" | openssl dgst -sha256 | awk '{print $2}')
 
-    # 1. 构造 Canonical Request (用 printf '\n' 绝对保障换行符存在)
+    # 1. 构造 Canonical Request
+    # 注意：canonical_uri 必须与 API Gateway 实际规范化后的 URI 一致。
     canonical_req_str=$(printf "PUT\n%s\n\ncontent-type:application/json\nhost:%s\nx-sdk-date:%s\n\n%s\n%s" \
-        "$path" "$endpoint" "$x_sdk_date" "$signed_headers" "$body_hash")
+        "$canonical_uri" "$endpoint" "$x_sdk_date" "$signed_headers" "$body_hash")
 
     canonical_hash=$(printf "%s" "$canonical_req_str" | openssl dgst -sha256 | awk '{print $2}')
 
