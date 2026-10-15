@@ -42,13 +42,28 @@ load_config() {
     if [ -f "$CONFIG_FILE" ]; then
         . "$CONFIG_FILE"
     fi
+
+    [ -z "$CRON_UTC8_HOUR_RANGE" ] && CRON_UTC8_HOUR_RANGE="00-23"
+    [ -z "$CRON_INTERVAL_MINUTES" ] && CRON_INTERVAL_MINUTES="5"
+    [ -z "$AUTO_DNS_SWITCH" ] && AUTO_DNS_SWITCH="1"
+}
+
+save_runtime_config_value() {
+    key="$1"
+    value="$2"
+
+    touch "$CONFIG_FILE"
+    {
+        grep -v "^${key}=" "$CONFIG_FILE" 2>/dev/null
+        printf '%s="%s"\n' "$key" "$value"
+    } > "${CONFIG_FILE}.tmp"
+    mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
 }
 
 # 3. 校验必要配置是否存在
 check_config_env() {
     load_config
-    [ -z "$CRON_UTC8_HOUR_RANGE" ] && CRON_UTC8_HOUR_RANGE="00-23"
-    [ -z "$CRON_INTERVAL_MINUTES" ] && CRON_INTERVAL_MINUTES="5"
     if [ -z "$HUAWEI_AK" ] || [ -z "$HUAWEI_SK" ] || [ -z "$HUAWEI_ZONE_ID" ] || \
        [ -z "$HUAWEI_RECORDSET_ID" ] || [ -z "$DNS_RECORD_NAME" ] || \
        [ -z "$MAIN_IP" ] || [ -z "$BACKUP_IP" ] || [ -z "$SPEED_THRESHOLD_MBPS" ]; then
@@ -64,7 +79,7 @@ configure_settings() {
     echo "========================================================="
     echo "               设置 / 修改系统参数"
     echo "========================================================="
-    
+
     printf "请输入 华为云 HUAWEI_AK [%s]: " "${HUAWEI_AK:-}"
     read input; [ -n "$input" ] && HUAWEI_AK="$input"
 
@@ -110,6 +125,7 @@ BACKUP_IP="$(printf "%s" "$BACKUP_IP" | tr -d '\r')"
 SPEED_THRESHOLD_MBPS="$(printf "%s" "$SPEED_THRESHOLD_MBPS" | tr -d '\r')"
 CRON_UTC8_HOUR_RANGE="$(printf "%s" "${CRON_UTC8_HOUR_RANGE:-00-23}" | tr -d '\r')"
 CRON_INTERVAL_MINUTES="$(printf "%s" "${CRON_INTERVAL_MINUTES:-5}" | tr -d '\r')"
+AUTO_DNS_SWITCH="$(printf "%s" "${AUTO_DNS_SWITCH:-1}" | tr -d '\r')"
 EOF
 
     chmod 600 "$CONFIG_FILE"
@@ -125,7 +141,6 @@ update_huawei_dns() {
     echo "       目标 IP : ${TARGET_IP}"
     echo "       触发原因: ${REASON}"
 
-    # 清理参数中的 \r 回车符
     HUAWEI_AK=$(printf "%s" "$HUAWEI_AK" | tr -d '\r')
     HUAWEI_SK=$(printf "%s" "$HUAWEI_SK" | tr -d '\r')
     HUAWEI_ZONE_ID=$(printf "%s" "$HUAWEI_ZONE_ID" | tr -d '\r')
@@ -135,10 +150,6 @@ update_huawei_dns() {
 
     endpoint="dns.myhuaweicloud.com"
     method="PUT"
-
-    # 实际 HTTP 请求 URI 按华为云 API 文档使用无尾斜杠路径；
-    # 但 DNS API Gateway 在签名校验时会将该资源路径规范化为带尾斜杠。
-    # 因此：请求 URL 使用 path，Canonical Request 使用 canonical_uri。
     path="/v2.1/zones/${HUAWEI_ZONE_ID}/recordsets/${HUAWEI_RECORDSET_ID}"
     canonical_uri="${path}/"
     url="https://${endpoint}${path}"
@@ -148,22 +159,13 @@ update_huawei_dns() {
 
     signed_headers="content-type;host;x-sdk-date"
     body_hash=$(printf "%s" "$body" | openssl dgst -sha256 | awk '{print $2}')
-
-    # 1. 构造 Canonical Request
-    # 注意：canonical_uri 必须与 API Gateway 实际规范化后的 URI 一致。
     canonical_req_str=$(printf "PUT\n%s\n\ncontent-type:application/json\nhost:%s\nx-sdk-date:%s\n\n%s\n%s" \
         "$canonical_uri" "$endpoint" "$x_sdk_date" "$signed_headers" "$body_hash")
-
     canonical_hash=$(printf "%s" "$canonical_req_str" | openssl dgst -sha256 | awk '{print $2}')
-
-    # 2. 构造 StringToSign
     string_to_sign=$(printf "SDK-HMAC-SHA256\n%s\n%s" "$x_sdk_date" "$canonical_hash")
-
-    # 3. 计算签名
     signature=$(printf "%s" "$string_to_sign" | openssl dgst -sha256 -hmac "$HUAWEI_SK" | awk '{print $2}')
     authorization="SDK-HMAC-SHA256 Access=${HUAWEI_AK}, SignedHeaders=${signed_headers}, Signature=${signature}"
 
-    # 4. 发起 API 请求
     response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT "$url" \
         -H "Content-Type: application/json" \
         -H "Host: ${endpoint}" \
@@ -222,6 +224,18 @@ run_speedtest() {
 
     IS_BELOW_THRESHOLD=$(awk "BEGIN {print ($SPEED_MBPS < $SPEED_THRESHOLD_MBPS) ? 1 : 0}")
 
+    if [ "${AUTO_DNS_SWITCH:-1}" != "1" ]; then
+        if [ "$IS_BELOW_THRESHOLD" -eq 1 ]; then
+            TEST_RESULT="低于阈值，按规则应切换至备用 IP ${BACKUP_IP}"
+        else
+            TEST_RESULT="达到阈值，按规则应切换至主 IP ${MAIN_IP}"
+        fi
+        echo "[INFO] 自动 DNS 切换已关闭，仅测速，不修改 DNS。"
+        echo "       判定结果: ${TEST_RESULT}"
+        record_run_status "SUCCESS" "仅测速：${SPEED_MBPS} Mbps；自动 DNS 切换已关闭；${TEST_RESULT}"
+        return 0
+    fi
+
     if [ "$IS_BELOW_THRESHOLD" -eq 1 ]; then
         update_huawei_dns "$BACKUP_IP" "网速处于限速状态 (${SPEED_MBPS} Mbps < ${SPEED_THRESHOLD_MBPS} Mbps)"
     else
@@ -264,8 +278,6 @@ manage_cron() {
             START_HOUR=$(printf '%s' "$HOUR_RANGE" | cut -d'-' -f1)
             END_HOUR=$(printf '%s' "$HOUR_RANGE" | cut -d'-' -f2)
 
-            # 使用 Debian cron 的 CRON_TZ，让“小时范围”严格按 UTC+8(Asia/Shanghai)解释。
-            # 非跨午夜：一条规则；跨午夜：拆成两条规则。
             if [ "$START_HOUR" -le "$END_HOUR" ]; then
                 CRON_HOURS="${START_HOUR#0}-${END_HOUR#0}"
                 CRON_LINES="CRON_TZ=Asia/Shanghai
@@ -276,7 +288,6 @@ manage_cron() {
 */${MINS} 0-${END_HOUR#0} * * * /bin/sh ${SCRIPT_PATH} --cron >> ${HOME}/huawei_dns.log 2>&1"
             fi
 
-            # 删除旧任务后写入新任务，同时保存配置。
             (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | grep -v '^CRON_TZ=Asia/Shanghai$'
              printf '%s\n' "$CRON_LINES") | crontab -
 
@@ -363,8 +374,6 @@ get_next_cron_run() {
     now_hour=$(to_decimal "$now_hour")
     now_minute=$(to_decimal "$now_minute")
 
-    # 使用 epoch 运算计算下一个分钟点，避免 GNU date 把
-    # "+40 minutes" 之类的字符串误解析成时区。
     next_minute=$(( ((now_minute / interval) + 1) * interval ))
 
     if [ "$next_minute" -ge 60 ]; then
@@ -387,7 +396,6 @@ get_next_cron_run() {
             next_epoch="$candidate_epoch"
         fi
     else
-        # 跨午夜，例如 22-02。
         in_range=0
         if [ "$now_hour" -ge "$start_hour" ] || [ "$now_hour" -le "$end_hour" ]; then
             in_range=1
@@ -414,6 +422,7 @@ get_next_cron_run() {
 }
 
 show_status() {
+    load_config
     echo ""
     echo "---------------- 当前运行状态 ----------------"
     cron_info=$(get_cron_status)
@@ -424,6 +433,12 @@ show_status() {
     printf "  UTC+8 运行时段   : %s:00 - %s:59\n" \
         "$(printf '%s' "${CRON_UTC8_HOUR_RANGE:-00-23}" | cut -d'-' -f1)" \
         "$(printf '%s' "${CRON_UTC8_HOUR_RANGE:-00-23}" | cut -d'-' -f2)"
+
+    if [ "${AUTO_DNS_SWITCH:-1}" = "1" ]; then
+        printf "  自动 DNS 切换   : 已开启\n"
+    else
+        printf "  自动 DNS 切换   : 已关闭（仅测速）\n"
+    fi
 
     if [ "$cron_enabled" = "已启用" ]; then
         printf "  预计下次运行    : %s\n" "$(get_next_cron_run)"
@@ -449,23 +464,42 @@ show_status() {
     echo "----------------------------------------------"
 }
 
+toggle_auto_dns_switch() {
+    load_config
+    if [ "${AUTO_DNS_SWITCH:-1}" = "1" ]; then
+        AUTO_DNS_SWITCH="0"
+        save_runtime_config_value "AUTO_DNS_SWITCH" "$AUTO_DNS_SWITCH"
+        echo "[SUCCESS] 自动 DNS 切换已关闭。后续测速仍会执行，但不会修改 DNS。"
+    else
+        AUTO_DNS_SWITCH="1"
+        save_runtime_config_value "AUTO_DNS_SWITCH" "$AUTO_DNS_SWITCH"
+        echo "[SUCCESS] 自动 DNS 切换已开启。后续测速将按阈值自动切换 DNS。"
+    fi
+}
+
 # 9. 主菜单控制系统
 show_menu() {
     load_config
     while true; do
+        load_config
         echo ""
         echo "========================================================="
         echo "       华为云 DNS 带宽上限自动/手动检测管理脚本"
         echo "========================================================="
         show_status
-        echo "  1. 立即执行网速测试并自动切换 DNS"
+        echo "  1. 立即执行网速测试"
         echo "  2. 手动强制切换为【主 IP】   (${MAIN_IP:-未配置})"
         echo "  3. 手动强制切换为【备用 IP】 (${BACKUP_IP:-未配置})"
         echo "  4. 设置 / 修改配置信息 (API 凭证、IP、阈值)"
         echo "  5. 配置 / 卸载定时任务 (Crontab)"
+        if [ "${AUTO_DNS_SWITCH:-1}" = "1" ]; then
+            echo "  6. 关闭自动 DNS 切换（当前：已开启）"
+        else
+            echo "  6. 开启自动 DNS 切换（当前：已关闭，仅测速）"
+        fi
         echo "  0. 退出程序"
         echo "========================================================="
-        printf "请输入选项 [0-5]: "
+        printf "请输入选项 [0-6]: "
         read choice
 
         case "$choice" in
@@ -485,6 +519,9 @@ show_menu() {
                 ;;
             5)
                 manage_cron
+                ;;
+            6)
+                toggle_auto_dns_switch
                 ;;
             0)
                 echo "退出程序。"
@@ -508,6 +545,12 @@ elif [ "$1" = "--force-main" ]; then
 elif [ "$1" = "--force-backup" ]; then
     check_config_env
     update_huawei_dns "$BACKUP_IP" "命令行强制指定 --force-backup"
+elif [ "$1" = "--enable-dns-switch" ]; then
+    save_runtime_config_value "AUTO_DNS_SWITCH" "1"
+    echo "[SUCCESS] 自动 DNS 切换已开启。"
+elif [ "$1" = "--disable-dns-switch" ]; then
+    save_runtime_config_value "AUTO_DNS_SWITCH" "0"
+    echo "[SUCCESS] 自动 DNS 切换已关闭，后续仅测速。"
 elif [ "$1" = "--uninstall-cron" ]; then
     crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" | crontab -
     echo "[SUCCESS] 已通过命令行成功卸载定时任务。"
