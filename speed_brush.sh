@@ -92,13 +92,13 @@ update_daily_random_offsets() {
         START_OFFSET_SEC=$((RANDOM % 1801))
         STOP_OFFSET_SEC=$((RANDOM % 1801))
         LAST_DATE_STAMP="$TODAY"
-        
+
         START_MIN=$((START_OFFSET_SEC / 60))
         STOP_MIN=$((STOP_OFFSET_SEC / 60))
-        
+
         # 顺便清理超长旧日志
         truncate_log
-        
+
         echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 📅 更新本日运行计划: 07:$(printf "%02d" $START_MIN) 随机启动，01:$(printf "%02d" $STOP_MIN) 随机停止"
     fi
 }
@@ -240,7 +240,7 @@ start_engine() {
         if [ "$RAND_DICE" -lt "$PAUSE_CHANCE" ]; then
             PAUSE_TIME_SEC=$(get_random_pause_sec)
             PAUSE_MIN_DISP=$(format_sec_to_min $PAUSE_TIME_SEC)
-            
+
             echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] 🎲 命中 25% 随机概率，暂停 $PAUSE_TIME_SEC 秒 (约 ${PAUSE_MIN_DISP} 分钟)..."
             sleep $PAUSE_TIME_SEC
         else
