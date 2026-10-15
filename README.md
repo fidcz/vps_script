@@ -36,3 +36,11 @@ curl -fsSL https://raw.githubusercontent.com/fidcz/vps_script/main/manage_dns_sw
 ```
 wget -qO manage_dns_switch.sh https://raw.githubusercontent.com/fidcz/vps_script/main/manage_dns_switch.sh && chmod +x manage_dns_switch.sh && ./manage_dns_switch.sh
 ```
+
+## nftpf.sh
+> nftables端口转发-带限速版本  
+```
+curl -o nftpf.sh https://raw.githubusercontent.com/fidcz/vps_script/main/nftpf.sh
+chmod +x nftpf.sh
+sudo bash nftpf.sh
+```
